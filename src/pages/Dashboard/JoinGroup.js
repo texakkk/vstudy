@@ -5,8 +5,8 @@ import './JoinGroup.css';
 
 const JoinGroup = () => {
   const { invitationToken } = useParams();
-  const [email, setEmail] = useState('');
-  const [password, setPassword] = useState('');
+  const [User_email, setUser_email] = useState('');
+  const [User_password, setUser_password] = useState('');
   const [statusMessage, setStatusMessage] = useState('');
   const [errorMessage, setErrorMessage] = useState('');
   const [isJoining, setIsJoining] = useState(false);
@@ -16,7 +16,7 @@ const JoinGroup = () => {
   const handleLogin = async (e) => {
     e.preventDefault();
     try {
-      const res = await api.post('/auth/login', { email, password });
+      const res = await api.post('/auth/login', { User_email, User_password });
       localStorage.setItem('token', res.data.token); // Save the token for future use
       setErrorMessage('');
       setStatusMessage('Login successful! Joining the group...');
@@ -33,51 +33,69 @@ const JoinGroup = () => {
       const res = await api.post(`/group/join/${invitationToken}`, {}, {
         headers: { Authorization: `Bearer ${token}` },
       });
-      setStatusMessage(res.data.message || 'Successfully joined the group!');
-      setTimeout(() => navigate('/dashboard'), 2000); // Redirect after joining
+
+      if (res.data.success) {
+        setStatusMessage(res.data.message || 'Successfully joined the group!');
+        // Store group ID in localStorage for potential future use
+        localStorage.setItem('joinedGroupId', res.data.group?._id);
+        // Navigate to the dashboard after successful join
+        setTimeout(() => {
+          navigate('/dashboard');
+        }, 2000);
+      } else {
+        setErrorMessage(res.data.message || 'Failed to join group');
+      }
     } catch (error) {
-      setStatusMessage(error.response?.data?.message || 'Error joining the group.');
+      setErrorMessage(error.response?.data?.message || 'Error joining the group');
+      console.error('Join group error:', error);
     } finally {
       setIsJoining(false);
     }
   };
 
   return (
-    <div className="join-group-page">
-      {!isJoining ? (
-        <>
-          <h1>Group Invitation</h1>
-          <p>Please log in to join the group.</p>
-          <form onSubmit={handleLogin}>
-            <div>
-              <label>Email:</label>
-              <input
-                type="email"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                required
-              />
-            </div>
-            <div>
-              <label>Password:</label>
-              <input
-                type="password"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                required
-              />
-            </div>
-            <button type="submit">Login and Join</button>
-          </form>
-          {errorMessage && <p className="error-message">{errorMessage}</p>}
-          <p>Don’t have an account? <a href="/get-started">Sign up</a></p>
-        </>
-      ) : (
-        <div>
-          <h1>Joining the Group...</h1>
-          <p>{statusMessage}</p>
+    <div className="join-group-container">
+      <h2>Join Group</h2>
+      <div className="status-container">
+        {statusMessage && (
+          <div className="status-message success">{statusMessage}</div>
+        )}
+        {errorMessage && (
+          <div className="status-message error">{errorMessage}</div>
+        )}
+      </div>
+      <form onSubmit={handleLogin} className="join-form">
+        <div className="form-group">
+          <label htmlFor="email">Email</label>
+          <input
+            type="email"
+            id="User_email"
+            value={User_email}
+            onChange={(e) => setUser_email(e.target.value)}
+            required
+            disabled={isJoining}
+            placeholder="Enter your email"
+          />
         </div>
-      )}
+        <div className="form-group">
+          <label htmlFor="password">Password</label>
+          <input
+            type="password"
+            id="User_password"
+            value={User_password}
+            onChange={(e) => setUser_password(e.target.value)}
+            required
+            disabled={isJoining}
+            placeholder="Enter your password"
+          />
+        </div>
+        <button type="submit" disabled={isJoining}>
+          {isJoining ? 'Joining...' : 'Join Group'}
+        </button>
+        <p className="signup-link">
+          Don't have an account? <a href="/get-started">Sign up</a>
+        </p>
+      </form>
     </div>
   );
 };

@@ -9,7 +9,14 @@ const GroupManagement = ({ onGroupChange = () => {} }) => {
   const [invitationLink, setInvitationLink] = useState('');
   const [notification, setNotification] = useState({ message: '', type: '' });
   const [activeGroup, setActiveGroup] = useState(null);
+  const [activeGroupDetails, setActiveGroupDetails] = useState(null);
   const [members, setMembers] = useState([]);
+  const [membersLoading, setMembersLoading] = useState(false);
+  const [membersError, setMembersError] = useState(null);
+  const [groupStats, setGroupStats] = useState(null);
+  const [editingGroup, setEditingGroup] = useState(null);
+  const [editGroupName, setEditGroupName] = useState('');
+  const [editGroupDescription, setEditGroupDescription] = useState('');
   
   useEffect(() => {
     const fetchGroups = async () => {
@@ -23,78 +30,274 @@ const GroupManagement = ({ onGroupChange = () => {} }) => {
           },
         });
         
-        setGroups(res.data.groups || []);
+        if (!res.data?.success) {
+          throw new Error(res.data?.message || 'Failed to fetch groups');
+        }
+
+        // Map the response to match our state structure
+        const groupsData = res.data.groups.map(group => ({
+          _id: group._id,
+          Group_name: group.Group_name,
+          Group_description: group.Group_description,
+          isCreatedByUser: group.isCreatedByUser,
+          userRole: group.userRole,
+          memberCount: group.memberCount || 0,
+          adminCount: group.adminCount || 0,
+          joinedAt: group.joinedAt
+        }));
+        
+
+        
+        setGroups(groupsData);
       } catch (err) {
-        setNotification({ message: 'Failed to load groups', type: 'error' });
+
+        setNotification({ message: err.message || 'Failed to load groups', type: 'error' });
       }
     };
     fetchGroups();
   }, []);
 
   const fetchGroupMembers = async (groupId) => {
+    setMembersLoading(true);
+    setMembersError(null);
+
+    try {
+
+      const token = localStorage.getItem('token');
+      if (!token) {
+        throw new Error('No token found');
+      }
+
+      try {
+        const res = await api.get(`/auth/group-users/${groupId}`, {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+
+
+        
+        // The backend returns users and group data
+        const membersData = res.data.users?.map(user => ({
+          _id: user._id,
+          name: user.User_name,
+          email: user.User_email,
+          role: user.isAdmin ? 'admin' : 'member',
+          isCreator: res.data.group?.createdBy?.toString() === user._id.toString(),
+          joinedAt: user.joinedAt,
+          lastActive: user.lastActive
+        })) || [];
+
+
+        
+        // Update the active group details with isCreatedByUser flag
+        const currentGroup = groups.find(g => g._id === groupId);
+        const storedUser = JSON.parse(localStorage.getItem('user') || '{}');
+        const currentUserId = storedUser._id || storedUser.User_id;
+        
+        const groupDetails = {
+          ...res.data.group,
+          isCreatedByUser: currentGroup?.isCreatedByUser || res.data.group?.Group_createdBy?.toString() === currentUserId,
+          userRole: currentGroup?.userRole || 'member'
+        };
+        
+
+        
+        setActiveGroupDetails(groupDetails);
+        
+        setMembersLoading(false);
+        return membersData;
+      } catch (apiError) {
+        throw apiError;
+      }
+    } catch (err) {
+      setMembersLoading(false);
+      setMembersError(err.message || 'Failed to load members');
+      throw err;
+    }
+  };
+
+  const fetchGroupStats = async (groupId) => {
     try {
       const token = localStorage.getItem('token');
-      const res = await api.get(`/auth/group-users/${groupId}`, {
-        headers: { Authorization: `Bearer ${token}` },
+      if (!token) {
+        throw new Error('No token found');
+      }
+
+      const response = await api.get(`/group/${groupId}/stats`, {
+        headers: { Authorization: `Bearer ${token}` }
       });
-      setMembers(res.data.users || []); // Assuming the response gives an array of users
-    } catch (err) {
-      setNotification({ message: 'Failed to load members', type: 'error' });
+
+      if (response.data.success) {
+        setGroupStats(response.data.stats);
+      }
+    } catch (error) {
+      // Don't show error notification for stats, it's not critical
     }
   };
 
   const handleGroupClick = async (groupId) => {
-    setActiveGroup(groupId);
-    onGroupChange(groupId);
-    await fetchGroupMembers(groupId);
-  };
-
-  const activeGroupDetails = groups.find((group) => group._id === activeGroup);
-
-  const handleRemoveMember = async (memberId) => {
+    // Don't do anything if clicking the same group
+    if (activeGroup === groupId) return;
+    
+    // Store the clicked group ID to check later if it's still active
+    const clickedGroupId = groupId;
+    
     try {
-      const token = localStorage.getItem('token');
-      await api.delete(`/group/members/${activeGroup}/${memberId}`, {
-        headers: { Authorization: `Bearer ${token}` },
-      });
-      setMembers(members.filter((member) => member._id !== memberId));
-      setNotification({ message: 'Member removed successfully', type: 'success' });
+      // Reset states when switching groups
+      setActiveGroup(clickedGroupId);
+      setMembers([]);
+      setGroupStats(null);
+      setInvitationLink('');
+      setNotification({ message: '', type: '' });
+      
+      // Notify parent component about the group change
+      onGroupChange(clickedGroupId);
+      
+      // Fetch both members and stats in parallel
+      const [membersData] = await Promise.all([
+        fetchGroupMembers(clickedGroupId),
+        fetchGroupStats(clickedGroupId)
+      ]);
+      
+      // Only update if we're still on the same group (user didn't click away)
+      setActiveGroupDetails(prev => ({
+        ...prev,
+        _id: clickedGroupId
+      }));
+      setMembers(membersData || []);
+      
     } catch (err) {
-      setNotification({ message: 'Failed to remove member', type: 'error' });
+      console.error('Error loading group:', err);
+      setNotification({ 
+        message: err.response?.data?.message || 'Failed to load group', 
+        type: 'error' 
+      });
     }
   };
 
-  const handleCreateGroup = async () => {
+  const handleRemoveMember = async (memberId, memberName) => {
+    // Add confirmation dialog
+    if (!window.confirm(`Are you sure you want to remove ${memberName} from this group?`)) {
+      return;
+    }
+
+    try {
+      const token = localStorage.getItem('token');
+      if (!token) {
+        throw new Error('No token found');
+      }
+
+      await api.delete(`/group/members/${activeGroup}/${memberId}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+
+      // Refresh the members list
+      const updatedMembers = members.filter(member => member._id !== memberId);
+      setMembers(updatedMembers);
+      setNotification({ message: 'Member removed successfully', type: 'success' });
+    } catch (error) {
+      setNotification({ message: error.response?.data?.message || 'Failed to remove member', type: 'error' });
+    }
+  };
+
+  const handleRoleChange = async (memberId, memberName, newRole) => {
+    const actionText = newRole === 'admin' ? 'promote to admin' : 'demote to member';
+    const confirmText = newRole === 'admin' 
+      ? `${memberName} will be able to manage group members, invite new members, and perform admin actions. Continue?`
+      : `${memberName} will lose admin privileges and become a regular member. Continue?`;
+    
+    if (!window.confirm(`${actionText.charAt(0).toUpperCase() + actionText.slice(1)} ${memberName}?\n\n${confirmText}`)) {
+      return;
+    }
+
+    try {
+      const token = localStorage.getItem('token');
+      if (!token) {
+        throw new Error('No token found');
+      }
+
+      const response = await api.patch(`/group/members/${activeGroup}/${memberId}/role`, 
+        { role: newRole },
+        { headers: { Authorization: `Bearer ${token}` } }
+      );
+
+      if (response.data.success) {
+        // Update the member's role in the local state
+        const updatedMembers = members.map(member => 
+          member._id === memberId 
+            ? { ...member, role: newRole }
+            : member
+        );
+        setMembers(updatedMembers);
+        setNotification({ 
+          message: `${memberName} has been ${newRole === 'admin' ? 'promoted to admin' : 'demoted to member'}`, 
+          type: 'success' 
+        });
+      }
+    } catch (error) {
+      setNotification({ 
+        message: error.response?.data?.message || 'Failed to change member role', 
+        type: 'error' 
+      });
+    }
+  };
+
+  const handleCreateGroup = async (e) => {
+    e.preventDefault();
     if (!groupName.trim() || !groupDescription.trim()) {
       setNotification({ message: 'Name and description cannot be empty', type: 'error' });
       return;
     }
-  
+
     try {
       const token = localStorage.getItem('token');
-      if (!token) {
-        setNotification({ message: 'Please login again', type: 'error' });
-        return;
-      }
-  
-      console.log('Creating group with name:', groupName, 'and description:', groupDescription);
       const res = await api.post(
         '/group/create',
-        { groupName, groupDescription },
+        { Group_name: groupName, Group_description: groupDescription },
         { headers: { Authorization: `Bearer ${token}` } }
       );
+
+      if (!res.data?.success) {
+        throw new Error(res.data?.message || 'Failed to create group');
+      }
+
+      const newGroup = {
+        _id: res.data.group._id,
+        Group_name: res.data.group.Group_name,
+        Group_description: res.data.group.Group_description,
+        isCreatedByUser: true,
+        userRole: 'admin',
+        memberCount: 1, // The creator is the first member
+        adminCount: 1, // The creator is also an admin
+        joinedAt: new Date().toISOString()
+      };
+
+      // Update the groups list with the new group
+      setGroups([...groups, newGroup]);
       
-      setGroups((prevGroups) => [...prevGroups, res.data.newGroup]);
+      // Set the newly created group as active
+      setActiveGroup(newGroup._id);
+      onGroupChange(newGroup._id);
+      
+      // Clear the form
       setGroupName('');
       setGroupDescription('');
-      setNotification({ message: 'Group created successfully!', type: 'success' });
       
-      setTimeout(() => setNotification({ message: '', type: '' }), 3000);
-  
+      // Show success message
+      setNotification({ message: 'Group created successfully', type: 'success' });
+      
+      // Fetch the group details to populate members and stats
+      try {
+        const [membersData] = await Promise.all([
+          fetchGroupMembers(newGroup._id),
+          fetchGroupStats(newGroup._id)
+        ]);
+        
+        setMembers(membersData || []);
+      } catch (fetchError) {
+        console.error('Error fetching group details:', fetchError);
+      }
     } catch (err) {
-      const errorMessage = err.response?.data?.message || 'An unknown error occurred';
-      console.error('Error creating group:', errorMessage);
-      setNotification({ message: errorMessage, type: 'error' });
+      setNotification({ message: err.message || 'Failed to create group', type: 'error' });
     }
   };
 
@@ -104,25 +307,142 @@ const GroupManagement = ({ onGroupChange = () => {} }) => {
       const invitationToken = res.data.invitationToken;
   
       if (invitationToken) {
-        setInvitationLink(`${window.location.origin}/join-group/${invitationToken}`);
-        setNotification({ message: 'Invite link generated!', type: 'success' });
+        const link = `${window.location.origin}/join-group/${invitationToken}`;
+        setInvitationLink(link);
+        await navigator.clipboard.writeText(link);
+        setNotification({ message: 'Invite link copied to clipboard!', type: 'success' });
       } else {
         setNotification({ message: 'Failed to generate invite link', type: 'error' });
       }
     } catch (error) {
-      setNotification({ message: 'Error generating invitation link', type: 'error' });
+      console.error('Error generating invitation link:', error);
+      setNotification({ 
+        message: error.message || 'Error generating invitation link', 
+        type: 'error' 
+      });
+    }
+  };
+
+  const copyToClipboard = async (text) => {
+    try {
+      await navigator.clipboard.writeText(text);
+      setNotification({ message: 'Link copied to clipboard!', type: 'success' });
+    } catch (err) {
+      console.error('Failed to copy:', err);
+      setNotification({ message: 'Failed to copy link', type: 'error' });
     }
   };
 
   const handleDeleteGroup = async (groupId) => {
+    const groupToDelete = groups.find(g => g._id === groupId);
+    if (!groupToDelete) return;
+
+    const confirmMessage = `Are you sure you want to delete "${groupToDelete.Group_name}"?\n\nThis will permanently delete:\n• All group members\n• All messages and files\n• All tasks and video sessions\n• All related data\n\nThis action cannot be undone.`;
+    
+    if (!window.confirm(confirmMessage)) {
+      return;
+    }
+
     try {
-      await api.delete(`/group/${groupId}`);
-      setGroups(groups.filter((group) => group._id !== groupId));
-      setNotification({ message: 'Group deleted successfully', type: 'success' });
+      const token = localStorage.getItem('token');
+      await api.delete(`/group/${groupId}`, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      
+      // Remove from groups list
+      setGroups(groups.filter(group => group._id !== groupId));
+      
+      // Clear active group if it was the deleted one
+      if (activeGroup === groupId) {
+        setActiveGroup(null);
+        setActiveGroupDetails(null);
+        setMembers([]);
+        setGroupStats(null);
+        onGroupChange(null);
+      }
+      
+      setNotification({ message: 'Group and all associated data deleted successfully', type: 'success' });
     } catch (err) {
-      setNotification({ message: 'Failed to delete group', type: 'error' });
+      setNotification({ 
+        message: err.response?.data?.message || 'Failed to delete group', 
+        type: 'error' 
+      });
     }
   };
+
+  const handleEditGroup = (group) => {
+    setEditingGroup(group._id);
+    setEditGroupName(group.Group_name);
+    setEditGroupDescription(group.Group_description);
+  };
+
+  const handleCancelEdit = () => {
+    setEditingGroup(null);
+    setEditGroupName('');
+    setEditGroupDescription('');
+  };
+
+  const handleSaveEdit = async (groupId) => {
+    if (!editGroupName.trim()) {
+      setNotification({ message: 'Group name cannot be empty', type: 'error' });
+      return;
+    }
+
+    // Check if the new name conflicts with existing groups (excluding current group)
+    const nameConflict = groups.some(group => 
+      group._id !== groupId && 
+      group.Group_name.toLowerCase() === editGroupName.trim().toLowerCase()
+    );
+
+    if (nameConflict) {
+      setNotification({ message: 'A group with this name already exists', type: 'error' });
+      return;
+    }
+
+    try {
+      const token = localStorage.getItem('token');
+      const response = await api.put(`/group/${groupId}`, {
+        Group_name: editGroupName.trim(),
+        Group_description: editGroupDescription.trim()
+      }, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+
+      if (response.data.success) {
+        // Update the group in the local state
+        setGroups(groups.map(group => 
+          group._id === groupId 
+            ? { 
+                ...group, 
+                Group_name: editGroupName.trim(),
+                Group_description: editGroupDescription.trim()
+              }
+            : group
+        ));
+
+        // Update active group details if this is the active group
+        if (activeGroup === groupId) {
+          setActiveGroupDetails(prev => ({
+            ...prev,
+            Group_name: editGroupName.trim(),
+            Group_description: editGroupDescription.trim()
+          }));
+        }
+
+        setEditingGroup(null);
+        setEditGroupName('');
+        setEditGroupDescription('');
+        setNotification({ message: 'Group updated successfully', type: 'success' });
+      }
+    } catch (err) {
+      setNotification({ 
+        message: err.response?.data?.message || 'Failed to update group', 
+        type: 'error' 
+      });
+    }
+  };
+
+  // Note: activeGroupDetails is set in fetchGroupMembers to include proper admin permissions
 
   return (
     <div className="content-box">
@@ -149,48 +469,285 @@ const GroupManagement = ({ onGroupChange = () => {} }) => {
 
       <div className="group-list-container">
         <h3>Your Groups</h3>
-        <ul className="group-list">
+        <div className="groups-grid">
           {groups.map((group) => (
-            <li key={group._id} className="group-item">
-              <div className="group-details">
-                <span className="group-name" onClick={() => handleGroupClick(group._id)}>{group.groupName}</span>
-                <p className="group-description" onClick={() => handleGroupClick(group._id)}>{group.groupDescription}</p>
-              </div>
-              {group.isCreatedByUser && (
-                <div className="admin-actions">
-                  <button onClick={() => generateInvitationLink(group._id)} className="invite-link-button">Generate Invite Link</button>
-                  <button onClick={() => handleDeleteGroup(group._id)} className="delete-group-button">Delete Group</button>
+            <div key={group._id} className="group-card" onClick={() => editingGroup !== group._id ? handleGroupClick(group._id) : null}>
+              {editingGroup === group._id ? (
+                // Edit mode
+                <div className="group-edit-form" onClick={(e) => e.stopPropagation()}>
+                  <div className="group-header">
+                    <input
+                      type="text"
+                      value={editGroupName}
+                      onChange={(e) => setEditGroupName(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') {
+                          e.preventDefault();
+                          handleSaveEdit(group._id);
+                        } else if (e.key === 'Escape') {
+                          e.preventDefault();
+                          handleCancelEdit();
+                        }
+                      }}
+                      className="edit-group-name-input"
+                      placeholder="Group name"
+                      autoFocus
+                    />
+                    <div className="group-role-badge">
+                      <span className={`role-badge ${group.userRole}`}>
+                        {group.userRole.toUpperCase()}
+                      </span>
+                      {group.isCreatedByUser && (
+                        <span className="creator-badge">CREATOR</span>
+                      )}
+                    </div>
+                  </div>
+                  <textarea
+                    value={editGroupDescription}
+                    onChange={(e) => setEditGroupDescription(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' && e.ctrlKey) {
+                        e.preventDefault();
+                        handleSaveEdit(group._id);
+                      } else if (e.key === 'Escape') {
+                        e.preventDefault();
+                        handleCancelEdit();
+                      }
+                    }}
+                    className="edit-group-description-input"
+                    placeholder="Group description"
+                    rows="3"
+                  />
+                  
+                  <div className="edit-actions">
+                    <button 
+                      onClick={() => handleSaveEdit(group._id)}
+                      className="save-edit-button"
+                    >
+                      Save
+                    </button>
+                    <button 
+                      onClick={handleCancelEdit}
+                      className="cancel-edit-button"
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                  <div className="edit-help-text">
+                    <small>Press Enter to save, Escape to cancel. Use Ctrl+Enter in description to save.</small>
+                  </div>
                 </div>
+              ) : (
+                // View mode
+                <>
+                  <div className="group-header">
+                    <h4>{group.Group_name}</h4>
+                    <div className="group-role-badge">
+                      <span className={`role-badge ${group.userRole}`}>
+                        {group.userRole.toUpperCase()}
+                      </span>
+                      {group.isCreatedByUser && (
+                        <span className="creator-badge">CREATOR</span>
+                      )}
+                    </div>
+                  </div>
+                  <p className="group-description">{group.Group_description}</p>
+                  
+                  <div className="group-meta">
+                    {group.joinedAt && (
+                      <p className="joined-date">
+                        Joined: {new Date(group.joinedAt).toLocaleDateString()}
+                      </p>
+                    )}
+                  </div>
+
+                  {(group.isCreatedByUser || group.userRole === 'admin') && (
+                    <div className="group-actions" onClick={(e) => e.stopPropagation()}>
+                      <button 
+                        onClick={() => generateInvitationLink(group._id)} 
+                        className="invite-link-button"
+                      >
+                        Invite Link
+                      </button>
+                      {(group.isCreatedByUser || group.userRole === 'admin') && (
+                        <button 
+                          onClick={() => handleEditGroup(group)} 
+                          className="edit-group-button"
+                        >
+                          Edit
+                        </button>
+                      )}
+                      {group.isCreatedByUser && (
+                        <button 
+                          onClick={() => handleDeleteGroup(group._id)} 
+                          className="delete-group-button"
+                        >
+                          Delete
+                        </button>
+                      )}
+                    </div>
+                  )}
+                </>
               )}
-            </li>
+            </div>
           ))}
-        </ul>
+        </div>
       </div>
 
       {invitationLink && (
         <div className="invitation-link-container">
           <h4>Share this link to invite others:</h4>
-          <div className="invitation-link">{invitationLink}</div>
+          <div className="invitation-link-display">
+            <input 
+              type="text" 
+              value={invitationLink} 
+              readOnly 
+              className="invitation-link-input" 
+              onClick={(e) => e.target.select()}
+            />
+            <button 
+              className="copy-button"
+              onClick={() => copyToClipboard(invitationLink)}
+              title="Copy to clipboard"
+            >
+              📋 Copy
+            </button>
+          </div>
         </div>
       )}
 
+      {activeGroup && groupStats && (
+        <div className="group-overview">
+          <h3>
+            {groups.find(g => g._id === activeGroup)?.Group_name || 'Group'} Overview
+          </h3>
+          <div className="stats-grid">
+            <div className="stat-card">
+              <h4>Members</h4>
+              <div className="stat-number">{groupStats.members.total}</div>
+              <div className="stat-details">
+                <span>{groupStats.members.admins} admins</span>
+                <span>{groupStats.members.regularMembers} members</span>
+              </div>
+            </div>
+            <div className="stat-card">
+              <h4>Recent Activity</h4>
+              <div className="stat-number">{groupStats.members.recentJoins}</div>
+              <div className="stat-details">
+                <span>new members this week</span>
+              </div>
+            </div>
+            {groupStats.tasks.total > 0 && (
+              <div className="stat-card">
+                <h4>Tasks</h4>
+                <div className="stat-number">{groupStats.tasks.total}</div>
+                <div className="stat-details">
+                  <span>{groupStats.tasks.completed} completed</span>
+                  <span>{groupStats.tasks.pending} pending</span>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+
+
       {activeGroup && (
-        <div className="group-members">
-          <h3>Group Members</h3>
-          <ul className="member-list">
-            {members.map((member) => (
-              <li key={member.userId} className="member-item">
-                <span>{member.name}</span>
-                {member.isAdmin && <span>(Admin)</span>}
-                  {/* Only show the "Remove" button if the current user is the creator of the active group */}
-                {activeGroupDetails?.isCreatedByUser && (
-                  <button onClick={() => handleRemoveMember(member._id)} className="remove-member-button">
-                    Remove
-                  </button>
-                )}
-              </li>
-            ))}
-          </ul>
+        <div className="members-list">
+          <div className="members-list-header">
+            <h3>
+              {groups.find(g => g._id === activeGroup)?.Group_name || 'Group'} Members
+            </h3>
+          </div>
+
+          {membersLoading ? (
+            <div className="loading">Loading members...</div>
+          ) : membersError ? (
+            <div className="error">{membersError}</div>
+          ) : members.length === 0 ? (
+            <div className="no-members">No members in this group</div>
+          ) : (
+            <div className="members-grid">
+              {members.map((member) => (
+                <div key={member._id} className="member-card">
+                  <div className="member-info">
+                    <h4>{member.name}</h4>
+                    <p className="member-email">{member.email}</p>
+                    <div className="member-role">
+                      <span className={`role-badge ${member.role}`}>
+                        {member.role.toUpperCase()}
+                      </span>
+                      {member.isCreator && (
+                        <span className="creator-badge">CREATOR</span>
+                      )}
+                    </div>
+                    {member.joinedAt && (
+                      <p className="member-joined">
+                        Joined: {new Date(member.joinedAt).toLocaleDateString()}
+                      </p>
+                    )}
+                  </div>
+                  
+                  {/* Admin controls - show based on user permissions */}
+                  {(() => {
+                    const currentGroup = groups.find(g => g._id === activeGroup);
+                    const isUserAdmin = activeGroupDetails?.userRole === 'admin' || currentGroup?.userRole === 'admin';
+                    const isUserCreator = activeGroupDetails?.isCreatedByUser || currentGroup?.isCreatedByUser;
+                    
+                    return (isUserAdmin || isUserCreator) && !member.isCreator;
+                  })() && (
+                    <div className="member-actions">
+                      {/* Role management - only creators can promote/demote */}
+                      {(() => {
+                        const currentGroup = groups.find(g => g._id === activeGroup);
+                        const isUserCreator = activeGroupDetails?.isCreatedByUser || currentGroup?.isCreatedByUser;
+                        return isUserCreator;
+                      })() && (
+                        <div className="role-controls">
+                          {member.role === 'member' ? (
+                            <button 
+                              className="promote-button"
+                              onClick={() => handleRoleChange(member._id, member.name, 'admin')}
+                              title="Promote to Admin - Can manage members and invite others"
+                            >
+                              ↗ Make Admin
+                            </button>
+                          ) : (
+                            <button 
+                              className="demote-button"
+                              onClick={() => handleRoleChange(member._id, member.name, 'member')}
+                              title="Remove Admin Privileges"
+                            >
+                              ↘ Remove Admin
+                            </button>
+                          )}
+                        </div>
+                      )}
+                      
+                      {/* Remove member - both creators and admins can do this, but not for themselves */}
+                      {member._id !== JSON.parse(localStorage.getItem('user') || '{}')._id && (
+                        <button 
+                          className="remove-member-button"
+                          onClick={() => handleRemoveMember(member._id, member.name)}
+                          title="Remove from Group"
+                        >
+                          🗑 Remove
+                        </button>
+                      )}
+                    </div>
+                  )}
+                  
+                  {/* Show permissions info for current user */}
+                  {member._id === JSON.parse(localStorage.getItem('user') || '{}')._id && (
+                    <div className="current-user-badge">
+                      <span>You</span>
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       )}
     </div>

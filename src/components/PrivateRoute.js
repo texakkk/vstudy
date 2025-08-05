@@ -1,13 +1,23 @@
-// src/components/PrivateRoute.js
-import React, { useContext } from 'react';
-import { Navigate } from 'react-router-dom';
-import AuthContext from '../AuthContext';
+import React from 'react';
+import { Navigate, useLocation } from 'react-router-dom';
+import useAuth from '../hooks/useAuth';
 
 const PrivateRoute = ({ children }) => {
-  const { isAuthenticated } = useContext(AuthContext);
+  const { isAuthenticated, isLoading } = useAuth();
+  const location = useLocation();
 
-  // Redirect to sign-in if not authenticated
-  if (!isAuthenticated) return <Navigate to="/signin" />;
+  if (isLoading) {
+    return (
+      <div className="flex items-center justify-center min-h-screen">
+        <div className="animate-spin rounded-full h-12 w-12 border-t-2 border-b-2 border-blue-500"></div>
+      </div>
+    );
+  }
+
+  if (!isAuthenticated) {
+    // Redirect to sign-in page, but save the current location they were trying to go to
+    return <Navigate to="/signin" state={{ from: location }} replace />;
+  }
 
   return children;
 };

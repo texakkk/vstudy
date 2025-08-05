@@ -1,224 +1,884 @@
-// src/pages/Settings.js
-import React, { useState } from 'react';
-import api from '../../api'; // Import the custom Axios instance
-import './Settings.css';
+import React, { useState, useEffect } from "react";
+import { useSnackbar } from "notistack";
+import { useNavigate } from "react-router-dom";
+import { useTheme } from "../../context/ThemeContext";
+import { FiArrowLeft } from "react-icons/fi";
+import {
+  Box,
+  Typography,
+  Button,
+  Divider,
+  Paper,
+  TextField,
+  Dialog,
+  DialogActions,
+  DialogContent,
+  DialogContentText,
+  DialogTitle,
+  useMediaQuery,
+  IconButton,
+  CircularProgress,
+  List,
+  ListItem,
+  ListItemIcon,
+  ListItemText,
+} from "@mui/material";
+import { useAuth } from "../../AuthContext";
+import PaletteIcon from "@mui/icons-material/Palette";
+import LanguageIcon from "@mui/icons-material/Language";
+import LockIcon from "@mui/icons-material/Lock";
+import AccountCircleIcon from "@mui/icons-material/AccountCircle";
+import AccessibilityIcon from "@mui/icons-material/Accessibility";
+import SettingsIcon from "@mui/icons-material/Settings";
+import { FormControlLabel, Switch } from "@mui/material";
+import api from "../../api";
 
 const Settings = () => {
-  const [activeTab, setActiveTab] = useState('profile');
+  const { currentUser, logout } = useAuth();
+  const { theme: currentTheme, setTheme: updateTheme } = useTheme();
+  const { enqueueSnackbar } = useSnackbar();
+  const navigate = useNavigate();
+  const isMobile = useMediaQuery("(max-width: 768px)");
 
-  const handleSubmit = async (data) => {
+  // Local settings state
+  const [settings, setSettings] = useState({
+    theme: currentTheme || "light",
+    fontSize: localStorage.getItem("fontSize") || "medium",
+    language: localStorage.getItem("language") || "en",
+    accessibility: {
+      highContrast: localStorage.getItem("highContrast") === "true",
+      reducedMotion: localStorage.getItem("reducedMotion") === "true",
+    },
+    preferences: {
+      autoSave: localStorage.getItem("autoSave") !== "false",
+      notifications: localStorage.getItem("notifications") !== "false",
+      soundEnabled: localStorage.getItem("soundEnabled") !== "false",
+    },
+  });
+
+  // State for password change form
+  const [passwordForm, setPasswordForm] = useState({
+    currentPassword: "",
+    newPassword: "",
+    confirmPassword: "",
+  });
+
+  // State for account deletion
+  const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
+  const [deletePassword, setDeletePassword] = useState("");
+  const [isLoading, setIsLoading] = useState(false);
+  const [activeTab, setActiveTab] = useState("appearance");
+
+  // Sync theme state with ThemeContext
+  useEffect(() => {
+    setSettings((prev) => ({
+      ...prev,
+      theme: currentTheme,
+    }));
+  }, [currentTheme]);
+
+  // Initialize settings on component mount
+  useEffect(() => {
+    // Apply current font size
+    const currentFontSize = localStorage.getItem("fontSize") || "medium";
+    document.documentElement.style.setProperty(
+      "--font-size",
+      currentFontSize === "small"
+        ? "14px"
+        : currentFontSize === "medium"
+        ? "16px"
+        : currentFontSize === "large"
+        ? "18px"
+        : "16px"
+    );
+
+    // Apply current language
+    const currentLanguage = localStorage.getItem("language") || "en";
+    document.documentElement.lang = currentLanguage;
+
+    // Apply accessibility settings
+    const highContrast = localStorage.getItem("highContrast") === "true";
+    const reducedMotion = localStorage.getItem("reducedMotion") === "true";
+
+    if (highContrast) {
+      document.documentElement.classList.add("high-contrast");
+    }
+    if (reducedMotion) {
+      document.documentElement.classList.add("reduced-motion");
+    }
+  }, []);
+
+  // Handle local settings changes with success notifications
+  const handleSettingChange = (settingType, value, settingName) => {
+    console.log(`Changing ${settingType} to:`, value);
     try {
-      switch (activeTab) {
-        case 'profile':
-          await api.put('/settings/profile', data);
+      let updatedSettings = { ...settings };
+
+      switch (settingType) {
+        case "theme":
+          console.log("Updating theme to:", value);
+          updateTheme(value);
+          updatedSettings.theme = value;
           break;
-        case 'privacy':
-          await api.put('/settings/privacy', data);
+        case "fontSize":
+          localStorage.setItem("fontSize", value);
+          updatedSettings.fontSize = value;
+          // Apply font size to document
+          document.documentElement.style.setProperty(
+            "--font-size",
+            value === "small"
+              ? "14px"
+              : value === "medium"
+              ? "16px"
+              : value === "large"
+              ? "18px"
+              : "16px"
+          );
           break;
-        case 'notifications':
-          await api.put('/settings/notifications', data);
+        case "language":
+          localStorage.setItem("language", value);
+          updatedSettings.language = value;
+          document.documentElement.lang = value;
           break;
-        case 'security':
-          await api.put('/settings/security', data);
+        case "accessibility":
+          Object.keys(value).forEach((key) => {
+            localStorage.setItem(key, value[key]);
+            updatedSettings.accessibility[key] = value[key];
+          });
+          // Apply accessibility settings
+          if (value.highContrast !== undefined) {
+            if (value.highContrast) {
+              document.documentElement.classList.add("high-contrast");
+            } else {
+              document.documentElement.classList.remove("high-contrast");
+            }
+          }
+          if (value.reducedMotion !== undefined) {
+            if (value.reducedMotion) {
+              document.documentElement.classList.add("reduced-motion");
+            } else {
+              document.documentElement.classList.remove("reduced-motion");
+            }
+          }
           break;
-        case 'application':
-          await api.put('/settings/application', data);
+        case "preferences":
+          Object.keys(value).forEach((key) => {
+            localStorage.setItem(key, value[key]);
+            updatedSettings.preferences[key] = value[key];
+          });
           break;
         default:
           break;
       }
-      alert('Settings updated successfully!');
+
+      setSettings(updatedSettings);
+
+      enqueueSnackbar(`${settingName} updated successfully`, {
+        variant: "success",
+        autoHideDuration: 3000,
+      });
     } catch (error) {
-      console.error(`Error updating ${activeTab} settings:`, error);
-      alert(`Failed to update ${activeTab} settings`);
+      console.error("Error updating setting:", error);
+      enqueueSnackbar(`Failed to update ${settingName}`, {
+        variant: "error",
+        autoHideDuration: 3000,
+      });
     }
   };
 
-  return (
-    <div className="settings-container">
-      <div className="settings-sidebar">
-        <h2>Settings</h2>
-        <ul>
-          {['profile', 'privacy', 'notifications', 'security', 'application'].map((tab) => (
-            <li
-              key={tab}
-              className={activeTab === tab ? 'active' : ''}
-              onClick={() => setActiveTab(tab)}
-            >
-              {tab.charAt(0).toUpperCase() + tab.slice(1)} Settings
-            </li>
-          ))}
-        </ul>
-      </div>
-      <div className="settings-content">{renderContent()}</div>
-    </div>
-  );
+  // Reset all settings
+  const handleResetSettings = () => {
+    try {
+      // Clear localStorage
+      localStorage.removeItem("fontSize");
+      localStorage.removeItem("language");
+      localStorage.removeItem("highContrast");
+      localStorage.removeItem("reducedMotion");
+      localStorage.removeItem("autoSave");
+      localStorage.removeItem("notifications");
+      localStorage.removeItem("soundEnabled");
 
-  function renderContent() {
-    switch (activeTab) {
-      case 'profile':
-        return <ProfileSettings onSave={handleSubmit} />;
-      case 'privacy':
-        return <PrivacySettings onSave={handleSubmit} />;
-      case 'notifications':
-        return <NotificationSettings onSave={handleSubmit} />;
-      case 'security':
-        return <SecuritySettings onSave={handleSubmit} />;
-      case 'application':
-        return <ApplicationSettings onSave={handleSubmit} />;
-      default:
-        return <ProfileSettings onSave={handleSubmit} />;
+      // Reset theme
+      updateTheme("light");
+
+      // Reset document properties
+      document.documentElement.style.setProperty("--font-size", "16px");
+      document.documentElement.lang = "en";
+      document.documentElement.classList.remove(
+        "high-contrast",
+        "reduced-motion"
+      );
+
+      // Reset local state
+      setSettings({
+        theme: "light",
+        fontSize: "medium",
+        language: "en",
+        accessibility: {
+          highContrast: false,
+          reducedMotion: false,
+        },
+        preferences: {
+          autoSave: true,
+          notifications: true,
+          soundEnabled: true,
+        },
+      });
+
+      enqueueSnackbar("All settings have been reset to defaults", {
+        variant: "success",
+        autoHideDuration: 3000,
+      });
+    } catch (error) {
+      console.error("Error resetting settings:", error);
+      enqueueSnackbar("Failed to reset settings", {
+        variant: "error",
+        autoHideDuration: 3000,
+      });
     }
-  }
-};
-
-// Profile Settings Section
-const ProfileSettings = ({ onSave }) => {
-  const [name, setName] = useState('');
-  const [email, setEmail] = useState('');
-
-  const handleFormSubmit = (e) => {
-    e.preventDefault();
-    onSave({ name, email });
   };
 
-  return (
-    <div className="settings-section">
-      <h3>Profile Settings</h3>
-      <form onSubmit={handleFormSubmit}>
-        <label>Full Name</label>
-        <input type="text" value={name} onChange={(e) => setName(e.target.value)} />
-        <label>Email Address</label>
-        <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} />
-        <button type="submit">Save Changes</button>
-      </form>
-    </div>
-  );
-};
-
-// Privacy Settings Section
-const PrivacySettings = ({ onSave }) => {
-  const [visibility, setVisibility] = useState('Public');
-  const [activityStatus, setActivityStatus] = useState('Show when active');
-
-  const handleFormSubmit = (e) => {
-    e.preventDefault();
-    onSave({ visibility, activityStatus });
+  // Handle password change form input changes
+  const handlePasswordChange = (e) => {
+    const { name, value } = e.target;
+    setPasswordForm((prev) => ({
+      ...prev,
+      [name]: value,
+    }));
   };
 
-  return (
-    <div className="settings-section">
-      <h3>Privacy Settings</h3>
-      <form onSubmit={handleFormSubmit}>
-        <label>Profile Visibility</label>
-        <select value={visibility} onChange={(e) => setVisibility(e.target.value)}>
-          <option>Public</option>
-          <option>Private</option>
-          <option>Only Friends</option>
-        </select>
-        <label>Activity Status</label>
-        <select value={activityStatus} onChange={(e) => setActivityStatus(e.target.value)}>
-          <option>Show when active</option>
-          <option>Hide my activity</option>
-        </select>
-        <button type="submit">Save Changes</button>
-      </form>
-    </div>
-  );
-};
-
-// Notification Settings Section
-const NotificationSettings = ({ onSave }) => {
-  const [emailNotifications, setEmailNotifications] = useState('All Notifications');
-  const [inAppNotifications, setInAppNotifications] = useState('All Notifications');
-
-  const handleFormSubmit = (e) => {
+  // Handle password form submission
+  const handlePasswordSubmit = async (e) => {
     e.preventDefault();
-    onSave({ emailNotifications, inAppNotifications });
-  };
 
-  return (
-    <div className="settings-section">
-      <h3>Notification Settings</h3>
-      <form onSubmit={handleFormSubmit}>
-        <label>Email Notifications</label>
-        <select value={emailNotifications} onChange={(e) => setEmailNotifications(e.target.value)}>
-          <option>All Notifications</option>
-          <option>Only Mentions</option>
-          <option>None</option>
-        </select>
-        <label>In-App Notifications</label>
-        <select value={inAppNotifications} onChange={(e) => setInAppNotifications(e.target.value)}>
-          <option>All Notifications</option>
-          <option>Only Direct Messages</option>
-          <option>None</option>
-        </select>
-        <button type="submit">Save Changes</button>
-      </form>
-    </div>
-  );
-};
-
-// Security Settings Section
-const SecuritySettings = ({ onSave }) => {
-  const [currentPassword, setCurrentPassword] = useState('');
-  const [newPassword, setNewPassword] = useState('');
-  const [confirmPassword, setConfirmPassword] = useState('');
-
-  const handleFormSubmit = (e) => {
-    e.preventDefault();
-    if (newPassword !== confirmPassword) {
-      alert('New password and confirmation do not match');
+    // Validate form
+    if (passwordForm.newPassword !== passwordForm.confirmPassword) {
+      enqueueSnackbar("New passwords do not match", { variant: "error" });
       return;
     }
-    onSave({ currentPassword, newPassword });
+
+    if (passwordForm.newPassword.length < 6) {
+      enqueueSnackbar("Password must be at least 6 characters long", {
+        variant: "error",
+      });
+      return;
+    }
+
+    try {
+      setIsLoading(true);
+
+      // Call API to change password
+      await api.put("/settings/password", {
+        currentPassword: passwordForm.currentPassword,
+        newPassword: passwordForm.newPassword,
+      });
+
+      // Reset form
+      setPasswordForm({
+        currentPassword: "",
+        newPassword: "",
+        confirmPassword: "",
+      });
+
+      enqueueSnackbar("Password updated successfully. Please log in again.", {
+        variant: "success",
+        autoHideDuration: 3000,
+      });
+
+      // Logout user after password change
+      setTimeout(() => {
+        logout();
+        navigate("/login");
+      }, 2000);
+    } catch (error) {
+      console.error("Error updating password:", error);
+      const errorMessage =
+        error.response?.data?.message || "Failed to update password";
+      enqueueSnackbar(errorMessage, { variant: "error" });
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  // Handle account deletion
+  const handleDeleteAccount = async () => {
+    if (!deletePassword) {
+      enqueueSnackbar(
+        "Please enter your password to confirm account deletion",
+        { variant: "error" }
+      );
+      return;
+    }
+
+    try {
+      setIsLoading(true);
+
+      // Call API to delete account
+      await api.delete("/settings/account", {
+        data: { password: deletePassword },
+      });
+
+      // Logout and redirect to home
+      await logout();
+      enqueueSnackbar("Your account has been deleted", { variant: "success" });
+      navigate("/");
+    } catch (error) {
+      console.error("Error deleting account:", error);
+      const errorMessage =
+        error.response?.data?.message || "Failed to delete account";
+      enqueueSnackbar(errorMessage, { variant: "error" });
+    } finally {
+      setIsLoading(false);
+      setDeleteDialogOpen(false);
+      setDeletePassword("");
+    }
+  };
+
+  // Render the settings content based on the active tab
+  const renderTabContent = () => {
+    switch (activeTab) {
+      case "appearance":
+        return (
+          <Paper elevation={3} sx={{ p: 3, mb: 3 }}>
+            <Typography variant="h6" gutterBottom>
+              Appearance
+            </Typography>
+            <Divider sx={{ mb: 3 }} />
+
+            <Box mb={4}>
+              <Typography variant="subtitle1" gutterBottom>
+                Theme
+              </Typography>
+              <Box display="flex" gap={2} mb={3} flexWrap="wrap">
+                <Button
+                  variant={
+                    settings.theme === "light" ? "contained" : "outlined"
+                  }
+                  onClick={() => handleSettingChange("theme", "light", "Theme")}
+                >
+                  Light
+                </Button>
+                <Button
+                  variant={settings.theme === "dark" ? "contained" : "outlined"}
+                  onClick={() => handleSettingChange("theme", "dark", "Theme")}
+                >
+                  Dark
+                </Button>
+                <Button
+                  variant={
+                    settings.theme === "system" ? "contained" : "outlined"
+                  }
+                  onClick={() =>
+                    handleSettingChange("theme", "system", "Theme")
+                  }
+                >
+                  System
+                </Button>
+              </Box>
+
+              <Typography variant="subtitle1" gutterBottom>
+                Font Size
+              </Typography>
+              <Box
+                display="flex"
+                gap={2}
+                alignItems="center"
+                mb={3}
+                flexWrap="wrap"
+              >
+                <Button
+                  variant={
+                    settings.fontSize === "small" ? "contained" : "outlined"
+                  }
+                  onClick={() =>
+                    handleSettingChange("fontSize", "small", "Font Size")
+                  }
+                  size="small"
+                >
+                  Small (14px)
+                </Button>
+                <Button
+                  variant={
+                    settings.fontSize === "medium" ? "contained" : "outlined"
+                  }
+                  onClick={() =>
+                    handleSettingChange("fontSize", "medium", "Font Size")
+                  }
+                  size="medium"
+                >
+                  Medium (16px)
+                </Button>
+                <Button
+                  variant={
+                    settings.fontSize === "large" ? "contained" : "outlined"
+                  }
+                  onClick={() =>
+                    handleSettingChange("fontSize", "large", "Font Size")
+                  }
+                  size="large"
+                >
+                  Large (18px)
+                </Button>
+              </Box>
+            </Box>
+          </Paper>
+        );
+
+      case "language":
+        return (
+          <Paper elevation={3} sx={{ p: 3, mb: 3 }}>
+            <Typography variant="h6" gutterBottom>
+              Language & Localization
+            </Typography>
+            <Divider sx={{ mb: 3 }} />
+
+            <Box display="flex" flexDirection="column" gap={2}>
+              <Button
+                variant={settings.language === "en" ? "contained" : "outlined"}
+                onClick={() =>
+                  handleSettingChange("language", "en", "Language")
+                }
+                fullWidth
+                sx={{ justifyContent: "flex-start" }}
+              >
+                🇺🇸 English
+              </Button>
+              <Button
+                variant={settings.language === "es" ? "contained" : "outlined"}
+                onClick={() =>
+                  handleSettingChange("language", "es", "Language")
+                }
+                fullWidth
+                sx={{ justifyContent: "flex-start" }}
+              >
+                🇪🇸 Español
+              </Button>
+              <Button
+                variant={settings.language === "fr" ? "contained" : "outlined"}
+                onClick={() =>
+                  handleSettingChange("language", "fr", "Language")
+                }
+                fullWidth
+                sx={{ justifyContent: "flex-start" }}
+              >
+                🇫🇷 Français
+              </Button>
+              <Button
+                variant={settings.language === "de" ? "contained" : "outlined"}
+                onClick={() =>
+                  handleSettingChange("language", "de", "Language")
+                }
+                fullWidth
+                sx={{ justifyContent: "flex-start" }}
+              >
+                🇩🇪 Deutsch
+              </Button>
+              <Button
+                variant={settings.language === "it" ? "contained" : "outlined"}
+                onClick={() =>
+                  handleSettingChange("language", "it", "Language")
+                }
+                fullWidth
+                sx={{ justifyContent: "flex-start" }}
+              >
+                🇮🇹 Italiano
+              </Button>
+              <Button
+                variant={settings.language === "pt" ? "contained" : "outlined"}
+                onClick={() =>
+                  handleSettingChange("language", "pt", "Language")
+                }
+                fullWidth
+                sx={{ justifyContent: "flex-start" }}
+              >
+                🇵🇹 Português
+              </Button>
+            </Box>
+          </Paper>
+        );
+
+      case "accessibility":
+        return (
+          <Paper elevation={3} sx={{ p: 3, mb: 3 }}>
+            <Typography variant="h6" gutterBottom>
+              Accessibility
+            </Typography>
+            <Divider sx={{ mb: 3 }} />
+
+            <Box display="flex" flexDirection="column" gap={3}>
+              <FormControlLabel
+                control={
+                  <Switch
+                    checked={settings.accessibility.highContrast}
+                    onChange={(e) =>
+                      handleSettingChange(
+                        "accessibility",
+                        { highContrast: e.target.checked },
+                        "High Contrast"
+                      )
+                    }
+                  />
+                }
+                label="High Contrast Mode"
+              />
+              <Typography
+                variant="body2"
+                color="textSecondary"
+                sx={{ mt: -2, ml: 4 }}
+              >
+                Increases contrast for better visibility
+              </Typography>
+
+              <FormControlLabel
+                control={
+                  <Switch
+                    checked={settings.accessibility.reducedMotion}
+                    onChange={(e) =>
+                      handleSettingChange(
+                        "accessibility",
+                        { reducedMotion: e.target.checked },
+                        "Reduced Motion"
+                      )
+                    }
+                  />
+                }
+                label="Reduce Motion"
+              />
+              <Typography
+                variant="body2"
+                color="textSecondary"
+                sx={{ mt: -2, ml: 4 }}
+              >
+                Minimizes animations and transitions
+              </Typography>
+            </Box>
+          </Paper>
+        );
+
+      case "preferences":
+        return (
+          <Paper elevation={3} sx={{ p: 3, mb: 3 }}>
+            <Typography variant="h6" gutterBottom>
+              Preferences
+            </Typography>
+            <Divider sx={{ mb: 3 }} />
+
+            <Box display="flex" flexDirection="column" gap={3}>
+              <FormControlLabel
+                control={
+                  <Switch
+                    checked={settings.preferences.autoSave}
+                    onChange={(e) =>
+                      handleSettingChange(
+                        "preferences",
+                        { autoSave: e.target.checked },
+                        "Auto Save"
+                      )
+                    }
+                  />
+                }
+                label="Auto Save"
+              />
+              <Typography
+                variant="body2"
+                color="textSecondary"
+                sx={{ mt: -2, ml: 4 }}
+              >
+                Automatically save your work as you type
+              </Typography>
+
+              <FormControlLabel
+                control={
+                  <Switch
+                    checked={settings.preferences.notifications}
+                    onChange={(e) =>
+                      handleSettingChange(
+                        "preferences",
+                        { notifications: e.target.checked },
+                        "Notifications"
+                      )
+                    }
+                  />
+                }
+                label="Enable Notifications"
+              />
+              <Typography
+                variant="body2"
+                color="textSecondary"
+                sx={{ mt: -2, ml: 4 }}
+              >
+                Receive system and app notifications
+              </Typography>
+
+              <FormControlLabel
+                control={
+                  <Switch
+                    checked={settings.preferences.soundEnabled}
+                    onChange={(e) =>
+                      handleSettingChange(
+                        "preferences",
+                        { soundEnabled: e.target.checked },
+                        "Sound Effects"
+                      )
+                    }
+                  />
+                }
+                label="Sound Effects"
+              />
+              <Typography
+                variant="body2"
+                color="textSecondary"
+                sx={{ mt: -2, ml: 4 }}
+              >
+                Play sounds for interactions and notifications
+              </Typography>
+
+              <Divider sx={{ my: 2 }} />
+
+              <Box>
+                <Typography variant="subtitle1" gutterBottom color="error">
+                  Reset Settings
+                </Typography>
+                <Typography variant="body2" color="textSecondary" paragraph>
+                  This will reset all your settings to their default values.
+                  This action cannot be undone.
+                </Typography>
+                <Button
+                  variant="outlined"
+                  color="error"
+                  onClick={handleResetSettings}
+                >
+                  Reset All Settings
+                </Button>
+              </Box>
+            </Box>
+          </Paper>
+        );
+
+      case "password":
+        return (
+          <Paper elevation={3} sx={{ p: 3, mb: 3 }}>
+            <Typography variant="h6" gutterBottom>
+              Change Password
+            </Typography>
+            <Divider sx={{ mb: 3 }} />
+
+            <Box component="form" onSubmit={handlePasswordSubmit}>
+              <TextField
+                fullWidth
+                margin="normal"
+                label="Current Password"
+                type="password"
+                name="currentPassword"
+                value={passwordForm.currentPassword}
+                onChange={handlePasswordChange}
+                required
+              />
+              <TextField
+                fullWidth
+                margin="normal"
+                label="New Password"
+                type="password"
+                name="newPassword"
+                value={passwordForm.newPassword}
+                onChange={handlePasswordChange}
+                required
+                helperText="Password must be at least 6 characters long"
+              />
+              <TextField
+                fullWidth
+                margin="normal"
+                label="Confirm New Password"
+                type="password"
+                name="confirmPassword"
+                value={passwordForm.confirmPassword}
+                onChange={handlePasswordChange}
+                required
+              />
+
+              <Box mt={3} display="flex" justifyContent="flex-end">
+                <Button
+                  type="submit"
+                  variant="contained"
+                  color="primary"
+                  disabled={isLoading}
+                  startIcon={isLoading ? <CircularProgress size={20} /> : null}
+                >
+                  Update Password
+                </Button>
+              </Box>
+            </Box>
+          </Paper>
+        );
+
+      case "account":
+        return (
+          <Paper elevation={3} sx={{ p: 3, mb: 3 }}>
+            <Typography variant="h6" gutterBottom>
+              Account
+            </Typography>
+            <Divider sx={{ mb: 3 }} />
+
+            <Box mb={4}>
+              <Typography variant="subtitle1" gutterBottom>
+                Account Information
+              </Typography>
+              <Typography variant="body2" color="textSecondary" paragraph>
+                <strong>Email:</strong> {currentUser?.User_email || "N/A"}
+              </Typography>
+              <Typography variant="body2" color="textSecondary" paragraph>
+                <strong>Account Created:</strong>{" "}
+                {new Date(currentUser?.User_createdAt).toLocaleDateString()}
+              </Typography>
+            </Box>
+
+            <Box>
+              <Typography variant="subtitle1" gutterBottom>
+                Danger Zone
+              </Typography>
+              <Typography variant="body2" color="textSecondary" paragraph>
+                Once you delete your account, there is no going back. Please be
+                certain.
+              </Typography>
+
+              <Button
+                variant="contained"
+                color="error"
+                onClick={() => setDeleteDialogOpen(true)}
+                disabled={isLoading}
+              >
+                Delete My Account
+              </Button>
+            </Box>
+          </Paper>
+        );
+
+      default:
+        return null;
+    }
   };
 
   return (
-    <div className="settings-section">
-      <h3>Security Settings</h3>
-      <form onSubmit={handleFormSubmit}>
-        <label>Current Password</label>
-        <input type="password" value={currentPassword} onChange={(e) => setCurrentPassword(e.target.value)} />
-        <label>New Password</label>
-        <input type="password" value={newPassword} onChange={(e) => setNewPassword(e.target.value)} />
-        <label>Confirm Password</label>
-        <input type="password" value={confirmPassword} onChange={(e) => setConfirmPassword(e.target.value)} />
-        <button type="submit">Change Password</button>
-      </form>
-    </div>
-  );
-};
+    <Box sx={{ maxWidth: 1200, mx: "auto", p: isMobile ? 1 : 3 }}>
+      <Box display="flex" alignItems="center" mb={3}>
+        {isMobile && (
+          <IconButton onClick={() => navigate(-1)} sx={{ mr: 1 }}>
+            <FiArrowLeft />
+          </IconButton>
+        )}
+        <Typography variant="h5" component="h1">
+          Settings
+        </Typography>
+      </Box>
 
-// Application Settings Section
-const ApplicationSettings = ({ onSave }) => {
-  const [theme, setTheme] = useState('Light Mode');
-  const [language, setLanguage] = useState('English');
+      <Box display="flex" flexDirection={isMobile ? "column" : "row"} gap={3}>
+        {/* Sidebar */}
+        <Paper
+          elevation={3}
+          sx={{
+            width: isMobile ? "100%" : 250,
+            flexShrink: 0,
+            mb: isMobile ? 2 : 0,
+            position: isMobile ? undefined : "sticky",
+            top: 80,
+            alignSelf: "flex-start",
+          }}
+        >
+          <List>
+            {[
+              { id: "appearance", label: "Appearance", icon: <PaletteIcon /> },
+              { id: "language", label: "Language", icon: <LanguageIcon /> },
+              {
+                id: "accessibility",
+                label: "Accessibility",
+                icon: <AccessibilityIcon />,
+              },
+              {
+                id: "preferences",
+                label: "Preferences",
+                icon: <SettingsIcon />,
+              },
+              { id: "password", label: "Password", icon: <LockIcon /> },
+              { id: "account", label: "Account", icon: <AccountCircleIcon /> },
+            ].map((item) => (
+              <ListItem
+                button
+                key={item.id}
+                selected={activeTab === item.id}
+                onClick={() => setActiveTab(item.id)}
+                sx={{
+                  "&.Mui-selected": {
+                    backgroundColor: "action.selected",
+                    "&:hover": {
+                      backgroundColor: "action.hover",
+                    },
+                  },
+                }}
+              >
+                <ListItemIcon
+                  sx={{
+                    color: activeTab === item.id ? "primary.main" : "inherit",
+                  }}
+                >
+                  {item.icon}
+                </ListItemIcon>
+                <ListItemText primary={item.label} />
+              </ListItem>
+            ))}
+          </List>
+        </Paper>
 
-  const handleFormSubmit = (e) => {
-    e.preventDefault();
-    onSave({ theme, language });
-  };
+        {/* Main Content */}
+        <Box flexGrow={1}>{renderTabContent()}</Box>
+      </Box>
 
-  return (
-    <div className="settings-section">
-      <h3>Application Settings</h3>
-      <form onSubmit={handleFormSubmit}>
-        <label>Theme</label>
-        <select value={theme} onChange={(e) => setTheme(e.target.value)}>
-          <option>Light Mode</option>
-          <option>Dark Mode</option>
-        </select>
-        <label>Language</label>
-        <select value={language} onChange={(e) => setLanguage(e.target.value)}>
-          <option>English</option>
-          <option>Spanish</option>
-          <option>French</option>
-          <option>German</option>
-        </select>
-        <button type="submit">Save Changes</button>
-      </form>
-    </div>
+      {/* Delete Account Confirmation Dialog */}
+      <Dialog
+        open={deleteDialogOpen}
+        onClose={() => setDeleteDialogOpen(false)}
+        aria-labelledby="delete-account-dialog-title"
+      >
+        <DialogTitle id="delete-account-dialog-title">
+          Delete Your Account?
+        </DialogTitle>
+        <DialogContent>
+          <DialogContentText>
+            This action cannot be undone. This will permanently delete your
+            account and all associated data. Please enter your password to
+            confirm you want to permanently delete your account.
+          </DialogContentText>
+          <TextField
+            autoFocus
+            margin="dense"
+            label="Password"
+            type="password"
+            fullWidth
+            variant="outlined"
+            value={deletePassword}
+            onChange={(e) => setDeletePassword(e.target.value)}
+            sx={{ mt: 2 }}
+          />
+        </DialogContent>
+        <DialogActions>
+          <Button
+            onClick={() => setDeleteDialogOpen(false)}
+            color="inherit"
+            disabled={isLoading}
+          >
+            Cancel
+          </Button>
+          <Button
+            onClick={handleDeleteAccount}
+            color="error"
+            variant="contained"
+            disabled={isLoading || !deletePassword}
+            startIcon={isLoading ? <CircularProgress size={20} /> : null}
+          >
+            Delete My Account
+          </Button>
+        </DialogActions>
+      </Dialog>
+    </Box>
   );
 };
 

@@ -1,23 +1,37 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { useSelector } from 'react-redux';
-import Peer from 'simple-peer';
-import io from 'socket.io-client';
+import React, { useState, useEffect, useRef, useCallback } from "react";
+import { useSelector } from "react-redux";
+import { useNavigate } from "react-router-dom";
+import Peer from "simple-peer";
+import io from "socket.io-client";
 import {
-  FaMicrophone, FaMicrophoneSlash, FaVideo, FaVideoSlash, FaSync, FaDesktop,
-  FaRegPaperPlane, FaPhone, FaPhoneSlash, FaUsers, FaCommentDots,
-} from 'react-icons/fa';
-import api from '../../api';
-import './VideoChat.css';
+  FaMicrophone,
+  FaMicrophoneSlash,
+  FaVideo,
+  FaVideoSlash,
+  FaSync,
+  FaDesktop,
+  FaRegPaperPlane,
+  FaPhone,
+  FaPhoneSlash,
+  FaUsers,
+  FaCommentDots,
+  FaSignOutAlt,
+} from "react-icons/fa";
+import api from "../../api";
+import "./VideoChat.css";
 
-const VideoChat = ({ groupId }) => {
+const VideoChat = ({ groupId, onLeave }) => {
   const currentUser = useSelector((state) => state.user.currentUser);
+  const navigate = useNavigate();
+  const [parsedUser, setParsedUser] = useState({});
   const [inCall, setInCall] = useState(false);
   const [sessionId, setSessionId] = useState(null);
- 
+
   const [peers, setPeers] = useState([]);
   const [messages, setMessages] = useState([]);
-  const [message, setMessage] = useState('');
+  const [message, setMessage] = useState("");
   const [participants, setParticipants] = useState([]);
+  const [isHost, setIsHost] = useState(false);
 
   const [audioEnabled, setAudioEnabled] = useState(true);
   const [videoEnabled, setVideoEnabled] = useState(true);
@@ -25,63 +39,375 @@ const VideoChat = ({ groupId }) => {
   const [showParticipants, setShowParticipants] = useState(true);
   const [showChat, setShowChat] = useState(true);
   const [stream, setStream] = useState(null);
-  const [error, setError] = useState('');
+  const [error, setError] = useState("");
   const socketRef = useRef();
   const userVideo = useRef();
   const peersRef = useRef([]);
-  // Initialize socket connection
-  const initializeSocket = useCallback((sessionId, isInitiator) => {
-    socketRef.current = io.connect('http://localhost:5000');
 
-    navigator.mediaDevices.getUserMedia({ video: true, audio: true })
-      .then((mediaStream) => {
-        setStream(mediaStream);
-        userVideo.current.srcObject = mediaStream;
-
-        const event = isInitiator ? 'startCall' : 'joinCall';
-        socketRef.current.emit(event, {
-          roomId: sessionId,
-          userId: currentUser,
-        });
-
-        socketRef.current.on('allUsers', (users) => {
-          const peers = users.map((userId) => createPeer(userId, socketRef.current.id, mediaStream));
-          setPeers(peers);
-        });
-
-        socketRef.current.on('userJoined', ({ signal, callerID }) => {
-          const peer = addPeer(signal, callerID, mediaStream);
-          peersRef.current.push({ peerID: callerID, peer });
-          setPeers((prev) => [...prev, peer]);
-        });
-
-        socketRef.current.on('receivingReturnedSignal', ({ id, signal }) => {
-          const item = peersRef.current.find((p) => p.peerID === id);
-          if (item) item.peer.signal(signal);
-        });
-
-        socketRef.current.on('updateParticipants', (updatedParticipants) => {
-          setParticipants(updatedParticipants); // Ensure participants are updated
-        });
-
-        socketRef.current.on('receiveMessage', (msg) => setMessages((prev) => [...prev, msg]));
-      })
-      .catch((err) => console.error('Error accessing media devices:', err));
+  // Load user information from localStorage or Redux
+  useEffect(() => {
+    if (currentUser) {
+      setParsedUser(currentUser);
+    } else {
+      const storedUser = JSON.parse(localStorage.getItem("user") || "{}");
+      if (storedUser && (storedUser._id || storedUser.User_id)) {
+        const normalizedUser = {
+          ...storedUser,
+          _id: storedUser._id || storedUser.User_id,
+          name: storedUser.name || storedUser.User_name,
+        };
+        setParsedUser(normalizedUser);
+      }
+    }
   }, [currentUser]);
+
+  // Fetch participants when session starts or changes
+  const fetchParticipants = useCallback(async () => {
+    if (!sessionId) return;
+
+    try {
+      const response = await api.get(`/videosession/participants/${sessionId}`);
+      if (response.data.success) {
+        const newParticipants = response.data.participants || [];
+        console.log("Fetched participants:", newParticipants.length, "participants");
+        setParticipants(newParticipants);
+        
+        // Update participant count in UI
+        console.log(`Updated participant list: ${newParticipants.length} total participants`);
+      } else {
+        console.error("Failed to fetch participants:", response.data.message);
+      }
+    } catch (error) {
+      console.error("Error fetching participants:", error);
+    }
+  }, [sessionId]);
+
+  // Initialize socket connection
+  const initializeSocket = useCallback(
+    (sessionId) => {
+      // Prevent multiple socket connections
+      if (socketRef.current && socketRef.current.connected) {
+        console.log("Socket already connected, skipping initialization");
+        return;
+      }
+
+      // Disconnect existing socket if any and clean up
+      if (socketRef.current) {
+        console.log("Cleaning up existing socket connection");
+        try {
+          socketRef.current.off(); // Remove all event listeners
+          if (socketRef.current.connected) {
+            socketRef.current.disconnect();
+          }
+        } catch (error) {
+          console.error("Error cleaning up socket:", error);
+        }
+        socketRef.current = null;
+      }
+
+      // Clean up existing peers
+      peersRef.current.forEach(({ peer }) => {
+        if (peer && !peer.destroyed) {
+          peer.destroy();
+        }
+      });
+      peersRef.current = [];
+      setPeers([]);
+
+      // Get auth token for socket authentication
+      const token = localStorage.getItem("token");
+      console.log(
+        "Initializing socket with token:",
+        token ? "Token found" : "No token"
+      );
+
+      socketRef.current = io.connect("http://localhost:5001/video", {
+        auth: {
+          token: token,
+        },
+        transports: ["websocket", "polling"], // Allow fallback to polling
+        timeout: 20000, // 20 second timeout
+        forceNew: true, // Force new connection
+      });
+
+      // Handle connection errors
+      socketRef.current.on("connect_error", (error) => {
+        console.error("Socket connection error:", error);
+        setError("Failed to connect to video chat server");
+      });
+
+      // Handle successful connection
+      socketRef.current.on("connect", () => {
+        console.log("Video chat socket connected successfully");
+        setError(""); // Clear any previous connection errors
+      });
+
+      // Handle disconnection
+      socketRef.current.on("disconnect", (reason) => {
+        console.log("Video chat socket disconnected:", reason);
+        if (reason === "io server disconnect") {
+          // Server disconnected, try to reconnect
+          socketRef.current.connect();
+        }
+      });
+
+      navigator.mediaDevices
+        .getUserMedia({ video: true, audio: true })
+        .then((mediaStream) => {
+          setStream(mediaStream);
+          if (userVideo.current) {
+            userVideo.current.srcObject = mediaStream;
+          }
+
+          // Always use joinCall for consistency
+          socketRef.current.emit(
+            "joinCall",
+            {
+              sessionId: sessionId,
+              userId: parsedUser._id || parsedUser.User_id,
+              userName: parsedUser.name || parsedUser.User_name,
+            },
+            (response) => {
+              if (response.success) {
+                console.log("Successfully joined call:", response);
+              } else {
+                console.error("Failed to join call:", response.error);
+                setError(response.error || "Failed to join video call");
+              }
+            }
+          );
+
+          socketRef.current.on("allUsers", (users) => {
+            console.log(
+              "All users received:",
+              users,
+              "Current socket ID:",
+              socketRef.current.id
+            );
+
+            // Filter out our own socket ID to avoid self-connection
+            const otherUsers = users.filter(
+              (userId) => userId !== socketRef.current.id
+            );
+            console.log("Other users (excluding self):", otherUsers);
+
+            // Clear existing peers first
+            peersRef.current.forEach(({ peer }) => {
+              if (peer && !peer.destroyed) {
+                try {
+                  peer.destroy();
+                } catch (error) {
+                  console.error("Error destroying existing peer:", error);
+                }
+              }
+            });
+            peersRef.current = [];
+            setPeers([]);
+
+            // Only create peers for OTHER users (not ourselves)
+            if (otherUsers.length > 0) {
+              console.log(`Creating ${otherUsers.length} peer connections...`);
+              const newPeers = [];
+              
+              otherUsers.forEach((userId) => {
+                try {
+                  const peer = createPeer(
+                    userId,
+                    socketRef.current.id,
+                    mediaStream
+                  );
+                  if (peer) {
+                    peersRef.current.push({ peerID: userId, peer });
+                    newPeers.push(peer);
+                    console.log(`Created peer connection for user: ${userId}`);
+                  }
+                } catch (error) {
+                  console.error(`Error creating peer for user ${userId}:`, error);
+                }
+              });
+              
+              setPeers(newPeers);
+              console.log("Successfully created", newPeers.length, "peer connections");
+            } else {
+              setPeers([]);
+              console.log("No other users, no peer connections needed");
+            }
+          });
+
+          socketRef.current.on("userJoined", ({ signal, callerID }) => {
+            console.log("User joined:", callerID, "with signal:", !!signal);
+            if (callerID && mediaStream) {
+              // Check if peer already exists
+              const existingPeer = peersRef.current.find(
+                (p) => p.peerID === callerID
+              );
+              if (existingPeer) {
+                console.log("Peer already exists for:", callerID, "- destroying and recreating");
+                // Destroy existing peer and create new one
+                if (existingPeer.peer && !existingPeer.peer.destroyed) {
+                  existingPeer.peer.destroy();
+                }
+                // Remove from arrays
+                peersRef.current = peersRef.current.filter(p => p.peerID !== callerID);
+                setPeers(prev => prev.filter(p => p !== existingPeer.peer));
+              }
+
+              // Create new peer connection
+              const peer = addPeer(signal, callerID, mediaStream);
+              if (peer) {
+                peersRef.current.push({ peerID: callerID, peer });
+                setPeers((prev) => [...prev, peer]);
+                console.log("Successfully added peer for user:", callerID);
+              } else {
+                console.error("Failed to create peer for user:", callerID);
+              }
+            }
+          });
+
+          socketRef.current.on("receivingReturnedSignal", ({ id, signal }) => {
+            const item = peersRef.current.find((p) => p.peerID === id);
+            if (item && item.peer && !item.peer.destroyed && signal) {
+              try {
+                item.peer.signal(signal);
+              } catch (error) {
+                console.error("Error signaling returned signal:", error);
+              }
+            }
+          });
+
+          socketRef.current.on("userLeft", ({ userId, socketId }) => {
+            console.log("User left:", { userId, socketId });
+            
+            // Remove the peer connection for the user who left
+            const peerIndex = peersRef.current.findIndex(p => p.peerID === socketId);
+            if (peerIndex > -1) {
+              const { peer } = peersRef.current[peerIndex];
+              if (peer && !peer.destroyed) {
+                try {
+                  peer.destroy();
+                } catch (error) {
+                  console.error("Error destroying peer:", error);
+                }
+              }
+              peersRef.current.splice(peerIndex, 1);
+              setPeers(prev => prev.filter((_, index) => index !== peerIndex));
+              console.log(`Removed peer connection for user ${userId}`);
+            }
+          });
+
+          socketRef.current.on("updateParticipants", (updatedParticipants) => {
+            setParticipants(updatedParticipants);
+          });
+
+          socketRef.current.on("participantJoined", (participantData) => {
+            console.log("Participant joined:", participantData);
+            fetchParticipants(); // Refresh participant list
+            
+            // Force a refresh of peer connections to ensure new participant videos are shown
+            setTimeout(() => {
+              fetchParticipants();
+            }, 1000);
+          });
+
+          socketRef.current.on("participantLeft", (participantData) => {
+            console.log("Participant left:", participantData);
+            
+            // Remove the peer connection for the user who left
+            const peerIndex = peersRef.current.findIndex(p => p.peerID === participantData.socketId);
+            if (peerIndex > -1) {
+              const { peer } = peersRef.current[peerIndex];
+              if (peer && !peer.destroyed) {
+                peer.destroy();
+              }
+              peersRef.current.splice(peerIndex, 1);
+              setPeers(prev => prev.filter((_, index) => index !== peerIndex));
+            }
+            
+            fetchParticipants(); // Refresh participant list
+          });
+
+          socketRef.current.on("participantCountUpdated", (data) => {
+            console.log("Participant count updated:", data);
+            fetchParticipants(); // Refresh participant list when count changes
+          });
+
+          socketRef.current.on("refreshPeerConnections", (data) => {
+            console.log("Refreshing peer connections:", data);
+            
+            // Clean up existing peer connections
+            peersRef.current.forEach(({ peer }) => {
+              if (peer && !peer.destroyed) {
+                try {
+                  peer.destroy();
+                } catch (error) {
+                  console.error("Error destroying peer during refresh:", error);
+                }
+              }
+            });
+            peersRef.current = [];
+            setPeers([]);
+
+            // Re-establish peer connections with all users except ourselves
+            const otherUsers = data.allUsers.filter(socketId => socketId !== socketRef.current.id);
+            console.log("Re-establishing connections with:", otherUsers.length, "users");
+
+            if (otherUsers.length > 0 && mediaStream) {
+              const newPeers = [];
+              
+              otherUsers.forEach((socketId) => {
+                try {
+                  const peer = createPeer(socketId, socketRef.current.id, mediaStream);
+                  if (peer) {
+                    peersRef.current.push({ peerID: socketId, peer });
+                    newPeers.push(peer);
+                    console.log(`Re-created peer connection for socket: ${socketId}`);
+                  }
+                } catch (error) {
+                  console.error(`Error re-creating peer for socket ${socketId}:`, error);
+                }
+              });
+              
+              setPeers(newPeers);
+              console.log("Successfully re-established", newPeers.length, "peer connections");
+            }
+          });
+
+          socketRef.current.on("receiveMessage", (msg) => {
+            setMessages((prev) => [...prev, msg]);
+          });
+        })
+        .catch((err) => {
+          console.error("Error accessing media devices:", err);
+          setError(
+            "Failed to access camera/microphone. Please check permissions."
+          );
+        });
+    },
+    [parsedUser, fetchParticipants]
+  );
 
   // Start a new call
   const startCall = async () => {
+    if (!parsedUser._id) {
+      setError("User not authenticated. Please refresh and try again.");
+      return;
+    }
+
     try {
-      const { data } = await api.post('/videosession/start', { groupId, hostUserId: currentUser });
+      const { data } = await api.post("/videosession/start", {
+        groupId,
+        hostUserId: parsedUser._id,
+      });
       setInCall(true);
       setSessionId(data.sessionId);
       setParticipants([]);
-      initializeSocket(data.sessionId, true); // Initiator
+      // Don't call initializeSocket here - let the useEffect handle it
     } catch (error) {
       if (error.response?.status === 409) {
-        alert('There is already an ongoing session for this group.');
+        setError("There is already an ongoing session for this group.");
       } else {
-        console.error('Failed to start video session:', error);
+        console.error("Failed to start video session:", error);
+        setError("Failed to start video session. Please try again.");
       }
     }
   };
@@ -89,111 +415,435 @@ const VideoChat = ({ groupId }) => {
   // Join an existing call
   const joinCall = useCallback(async () => {
     try {
-      const { data } = await api.get(`/videosession/get-session?groupId=${groupId}`);
+      const { data } = await api.get(
+        `/videosession/get-session?groupId=${groupId}`
+      );
       if (data.sessionId) {
         setInCall(true);
         setSessionId(data.sessionId);
         setParticipants([]);
-        initializeSocket(data.sessionId, false); // Non-initiator
+        // Don't call initializeSocket here - let the useEffect handle it
       } else {
-        console.error('No active session found for this group.');
+        console.error("No active session found for this group.");
       }
     } catch (error) {
-      console.error('Failed to join video session:', error);
+      console.error("Failed to join video session:", error);
     }
-  }, [groupId, initializeSocket]);
+  }, [groupId]);
 
+  // Socket reconnection and cleanup
   useEffect(() => {
-    if (sessionId) {
-      api.get(`/videosession/participants/${sessionId}`)
-        .then((response) => {
-          if (response.data.success) {
-            setParticipants(response.data.participants || []);
-          } else {
-            setError(response.data.message || 'Failed to fetch participants.');
+    const socket = socketRef.current;
+    if (!socket) return;
+
+    const handleDisconnect = (reason) => {
+      console.log("Socket disconnected:", reason);
+      if (socketRef.current) {
+        // Attempt to reconnect with exponential backoff
+        let attempts = 0;
+        const maxAttempts = 5;
+        const baseDelay = 1000; // 1 second
+
+        const tryReconnect = () => {
+          attempts++;
+          if (attempts > maxAttempts) {
+            console.error("Max reconnection attempts reached");
+            return;
           }
-        })
-        .catch((error) => console.error('Error fetching participants:', error));
+
+          const delay = Math.min(baseDelay * Math.pow(2, attempts), 30000); // Cap at 30s
+          console.log(`Attempting to reconnect in ${delay}ms...`);
+
+          setTimeout(() => {
+            if (socketRef.current && !socketRef.current.connected) {
+              socketRef.current.connect();
+            }
+          }, delay);
+        };
+
+        if (reason === "io server disconnect") {
+          // Immediate reconnect for server-side disconnects
+          socketRef.current.connect();
+        } else {
+          // Delayed reconnect for other disconnects
+          tryReconnect();
+        }
+      }
+    };
+
+    socket.on("disconnect", handleDisconnect);
+
+    return () => {
+      socket.off("disconnect", handleDisconnect);
+    };
+  }, []);
+
+  // Check if current user is the host and manage peer connections
+  useEffect(() => {
+    if (participants.length > 0 && parsedUser._id) {
+      const currentParticipant = participants.find(
+        (p) => p.userId?._id === parsedUser._id
+      );
+      if (currentParticipant) {
+        setIsHost(currentParticipant.isHost || false);
+      }
+
+      // If there's only 1 participant (yourself), clear any peer connections
+      if (participants.length === 1) {
+        console.log("Only 1 participant detected, clearing peer connections");
+        peersRef.current.forEach(({ peer }) => {
+          if (peer && !peer.destroyed) {
+            try {
+              peer.destroy();
+            } catch (error) {
+              console.error("Error destroying peer:", error);
+            }
+          }
+        });
+        peersRef.current = [];
+        setPeers([]);
+      }
     }
-  }, [sessionId]);
+  }, [participants, parsedUser._id]);
 
   const endCall = async () => {
     try {
       if (!sessionId) return;
-  
+
+      // Only hosts can end the entire session
+      if (!isHost) {
+        setError("Only the host can end the session for everyone.");
+        return;
+      }
+
       // Notify the server to end the session
-      await api.post('/videosession/end', { sessionId });
-  
+      await api.post("/videosession/end", { sessionId });
+
       // Reset states
       setInCall(false);
       setSessionId(null);
       setParticipants([]);
       setMessages([]);
-      
+
       // Notify other users in the room
       if (socketRef.current) {
-        socketRef.current.emit('endCall', { roomId: sessionId });
+        socketRef.current.emit("endCall", { roomId: sessionId });
         socketRef.current.disconnect();
+        socketRef.current = null;
       }
-  
-      // Clean up peer connections
-      peersRef.current.forEach(({ peer }) => peer.destroy());
-      setPeers([]);
-  
+
+      // Clean up all peer connections
+      cleanupPeers();
+
       // Stop the media stream
       if (stream) {
         stream.getTracks().forEach((track) => track.stop());
         setStream(null);
       }
     } catch (error) {
-      console.error('Failed to end video session:', error);
+      console.error("Failed to end video session:", error);
+      setError("Failed to end video session. Please try again.");
     }
   };
-  
+
+  // Leave session function for non-host participants
+  const leaveSession = async () => {
+    try {
+      if (!sessionId) return;
+
+      // Clean up peers first to ensure clean disconnection
+      cleanupPeers();
+
+      // Notify server and other participants
+      try {
+        await api.post("/videosession/leave", { 
+          sessionId,
+          userId: parsedUser._id 
+        });
+      } catch (error) {
+        console.error("Error notifying server about leave:", error);
+        // Continue with cleanup even if server notification fails
+      }
+
+      // Notify other users via socket
+      if (socketRef.current) {
+        try {
+          socketRef.current.emit("leaveCall", { 
+            sessionId,
+            userId: parsedUser._id,
+            userName: parsedUser.name || 'A participant'
+          });
+          socketRef.current.disconnect();
+        } catch (error) {
+          console.error("Error during socket cleanup:", error);
+        } finally {
+          socketRef.current = null;
+        }
+      }
+
+      // Stop all media tracks
+      if (stream) {
+        try {
+          stream.getTracks().forEach(track => {
+            try {
+              track.stop();
+            } catch (e) {
+              console.error("Error stopping track:", e);
+            }
+          });
+        } catch (error) {
+          console.error("Error stopping stream:", error);
+        } finally {
+          setStream(null);
+        }
+      }
+
+      // Reset all states and return to group chat
+      const resetAndReturn = () => {
+        setInCall(false);
+        setSessionId(null);
+        setParticipants([]);
+        setMessages([]);
+        setMessage("");
+        setIsHost(false);
+        setPeers([]);
+        setAudioEnabled(true);
+        setVideoEnabled(true);
+        setScreenSharing(false);
+        setShowParticipants(true);
+        setShowChat(true);
+        setError("");
+        
+        // Use the onLeave callback to return to group chat
+        if (onLeave) {
+          onLeave();
+        } else {
+          // Fallback to dashboard using proper React navigation
+          navigate('/dashboard');
+        }
+      };
+
+      // Small delay to ensure cleanup completes before returning
+      setTimeout(resetAndReturn, 100);
+    } catch (error) {
+      console.error("Failed to leave video session:", error);
+      setError("Failed to leave session. Please try again.");
+    }
+  };
+
   // Fetch active session on mount
   useEffect(() => {
     const checkActiveSession = async () => {
       try {
-        const { data } = await api.get(`/videosession/get-session?groupId=${groupId}`);
-        if (data.sessionId) {
+        const { data } = await api.get(
+          `/videosession/get-session?groupId=${groupId}`
+        );
+        if (data.sessionId && !inCall) {
           setInCall(true);
           setSessionId(data.sessionId);
-          joinCall();
+          // Don't call joinCall() here as it will be handled by sessionId useEffect
         }
       } catch (error) {
-        console.error('Error checking active session:', error);
+        console.error("Error checking active session:", error);
       }
     };
     checkActiveSession();
-  }, [groupId, joinCall]);
+  }, [groupId, inCall]);
 
   // Join session when `sessionId` changes
   useEffect(() => {
-    if (sessionId) {
-      api.post('/videosession/join-session', { sessionId }).catch((err) => {
-        console.error('Failed to join session:', err);
-        setError(err.response?.data?.message || 'Failed to join session.');
-      });
+    if (sessionId && parsedUser._id && !socketRef.current?.connected) {
+      console.log("Joining session:", sessionId, "for user:", parsedUser.name);
+      api
+        .post("/videosession/join-session", { sessionId })
+        .then(() => {
+          initializeSocket(sessionId);
+        })
+        .catch((err) => {
+          console.error("Failed to join session:", err);
+          setError(err.response?.data?.message || "Failed to join session.");
+        });
     }
-  }, [sessionId]);
+  }, [sessionId, parsedUser._id, initializeSocket]);
 
- 
+  // Clean up all peer connections
+  const cleanupPeers = useCallback(() => {
+    console.log("Cleaning up all peer connections");
+    peersRef.current.forEach(({ peer, peerID }) => {
+      if (peer) {
+        try {
+          // Send a goodbye message to the peer before destroying
+          if (peer.send) {
+            try {
+              peer.send(JSON.stringify({ type: 'goodbye' }));
+            } catch (e) {
+              console.log("Could not send goodbye message to peer", e);
+            }
+          }
+          
+          // Close data channels
+          if (peer._channel) {
+            peer._channel.close();
+          }
+          
+          // Destroy the peer connection
+          if (typeof peer.destroy === 'function' && !peer.destroyed) {
+            peer.destroy();
+          }
+          
+          // Remove from peer connections
+          if (socketRef.current && peerID) {
+            socketRef.current.emit('peerDisconnected', { peerID });
+          }
+        } catch (error) {
+          console.error("Error cleaning up peer:", error);
+        }
+      }
+    });
+    peersRef.current = [];
+    setPeers([]);
+  }, []);
+
+  // Set up socket and peer cleanup when session changes
+  useEffect(() => {
+    if (sessionId) {
+      fetchParticipants();
+      // Set up interval to refresh participants every 10 seconds
+      const participantInterval = setInterval(fetchParticipants, 10000);
+      
+      // Handle beforeunload to ensure cleanup when user closes tab
+      const handleBeforeUnload = () => {
+        if (socketRef.current) {
+          socketRef.current.emit('userDisconnected', { 
+            sessionId,
+            userId: parsedUser._id 
+          });
+        }
+      };
+      
+      window.addEventListener('beforeunload', handleBeforeUnload);
+      
+      return () => {
+        clearInterval(participantInterval);
+        window.removeEventListener('beforeunload', handleBeforeUnload);
+        cleanupPeers();
+        
+        // Clean up socket if still connected
+        if (socketRef.current) {
+          try {
+            if (socketRef.current.connected) {
+              socketRef.current.disconnect();
+            }
+            socketRef.current = null;
+          } catch (error) {
+            console.error("Error during socket cleanup:", error);
+          }
+        }
+      };
+    }
+  }, [sessionId, fetchParticipants, cleanupPeers, parsedUser._id]);
 
   // Peer management
   const createPeer = (userToSignal, callerID, stream) => {
-    const peer = new Peer({ initiator: true, trickle: false, stream });
-    peer.on('signal', (signal) => {
-      socketRef.current.emit('sendingSignal', { userToSignal, callerID, signal });
+    console.log(`Creating peer connection: ${callerID} -> ${userToSignal}`);
+    
+    const peer = new Peer({
+      initiator: true,
+      trickle: false,
+      stream,
+      config: {
+        iceServers: [
+          { urls: "stun:stun.l.google.com:19302" },
+          { urls: "stun:global.stun.twilio.com:3478" },
+        ],
+      },
     });
+
+    peer.on("signal", (signal) => {
+      console.log(`Sending signal from ${callerID} to ${userToSignal}`);
+      if (socketRef.current && !peer.destroyed) {
+        socketRef.current.emit("sendingSignal", {
+          userToSignal,
+          callerID,
+          signal,
+        });
+      }
+    });
+
+    peer.on("stream", (remoteStream) => {
+      console.log(`Received remote stream from peer ${userToSignal}`);
+    });
+
+    peer.on("connect", () => {
+      console.log(`Peer connection established with ${userToSignal}`);
+    });
+
+    peer.on("error", (error) => {
+      console.error(`Peer connection error (initiator) with ${userToSignal}:`, error);
+    });
+
+    peer.on("close", () => {
+      console.log(`Peer connection closed (initiator) with ${userToSignal}`);
+    });
+
     return peer;
   };
 
   const addPeer = (incomingSignal, callerID, stream) => {
-    const peer = new Peer({ initiator: false, trickle: false, stream });
-    peer.on('signal', (signal) => {
-      socketRef.current.emit('returningSignal', { signal, callerID });
+    console.log(`Adding peer connection from ${callerID}, has signal:`, !!incomingSignal);
+    
+    const peer = new Peer({
+      initiator: false,
+      trickle: false,
+      stream,
+      config: {
+        iceServers: [
+          { urls: "stun:stun.l.google.com:19302" },
+          { urls: "stun:global.stun.twilio.com:3478" },
+        ],
+      },
     });
-    peer.signal(incomingSignal);
+
+    peer.on("signal", (signal) => {
+      console.log(`Returning signal to ${callerID}`);
+      if (socketRef.current && !peer.destroyed) {
+        socketRef.current.emit("returningSignal", { signal, callerID });
+      }
+    });
+
+    peer.on("stream", (remoteStream) => {
+      console.log(`Received remote stream from ${callerID}`);
+    });
+
+    peer.on("connect", () => {
+      console.log(`Peer connection established with ${callerID}`);
+    });
+
+    peer.on("error", (error) => {
+      console.error(`Peer connection error with ${callerID}:`, error);
+    });
+
+    peer.on("close", () => {
+      console.log(`Peer connection closed with ${callerID}`);
+    });
+
+    // Only signal if we have a valid incoming signal and peer is not destroyed
+    if (incomingSignal && peer && !peer.destroyed) {
+      try {
+        // Add a small delay to ensure peer is ready
+        setTimeout(() => {
+          if (!peer.destroyed) {
+            console.log(`Signaling peer with incoming signal from ${callerID}`);
+            peer.signal(incomingSignal);
+          }
+        }, 100);
+      } catch (error) {
+        console.error(`Error signaling peer from ${callerID}:`, error);
+      }
+    } else {
+      console.warn(`Cannot signal peer from ${callerID}: missing signal or peer destroyed`);
+    }
+
     return peer;
   };
 
@@ -210,23 +860,74 @@ const VideoChat = ({ groupId }) => {
 
   const toggleScreenSharing = async () => {
     try {
-      const screenStream = screenSharing
-        ? await navigator.mediaDevices.getUserMedia({ video: true, audio: true })
-        : await navigator.mediaDevices.getDisplayMedia({ video: true });
+      let newStream;
 
-      setStream(screenStream);
-      userVideo.current.srcObject = screenStream;
-      peersRef.current.forEach(({ peer }) =>
-        peer.replaceTrack(stream.getVideoTracks()[0], screenStream.getVideoTracks()[0], stream)
-      );
+      if (screenSharing) {
+        // Stop screen sharing, return to camera
+        newStream = await navigator.mediaDevices.getUserMedia({
+          video: true,
+          audio: true,
+        });
+      } else {
+        // Start screen sharing
+        newStream = await navigator.mediaDevices.getDisplayMedia({
+          video: true,
+          audio: true,
+        });
 
-      screenStream.getVideoTracks()[0].onended = () => setScreenSharing(false);
+        // Handle when user stops screen sharing
+        newStream.getVideoTracks()[0].onended = () => {
+          toggleScreenSharing(); // This will revert to camera
+        };
+      }
+
+      // Stop all tracks in the current stream
+      if (stream) {
+        stream.getTracks().forEach((track) => track.stop());
+      }
+
+      // Update the stream
+      setStream(newStream);
+
+      // Update the local video element
+      if (userVideo.current) {
+        userVideo.current.srcObject = newStream;
+      }
+
+      // Update all peer connections
+      peersRef.current.forEach(({ peer }) => {
+        if (peer && !peer.destroyed) {
+          const videoTrack = newStream.getVideoTracks()[0];
+          const sender = peer
+            .getSenders()
+            .find((s) => s.track && s.track.kind === "video");
+          if (sender && videoTrack) {
+            sender.replaceTrack(videoTrack);
+          }
+        }
+      });
+
       setScreenSharing(!screenSharing);
     } catch (err) {
-      console.error('Screen sharing failed:', err);
+      console.error("Screen sharing failed:", err);
+      // If screen sharing fails, try to revert to camera
+      if (!screenSharing) {
+        try {
+          const cameraStream = await navigator.mediaDevices.getUserMedia({
+            video: true,
+            audio: true,
+          });
+          setStream(cameraStream);
+          if (userVideo.current) {
+            userVideo.current.srcObject = cameraStream;
+          }
+        } catch (error) {
+          console.error("Failed to revert to camera:", error);
+        }
+      }
     }
   };
-    
+
   // useEffect to Fetch Messages
   useEffect(() => {
     if (sessionId) {
@@ -244,204 +945,450 @@ const VideoChat = ({ groupId }) => {
           console.error("Error fetching messages:", error);
         }
       };
-  
+
       fetchMessages();
     }
   }, [sessionId]); // Run effect when sessionId changes
-  
+
   // sendMessage Function
-const sendMessage = async () => {
-  if (!message.trim()) return; // Prevent sending empty messages
+  const sendMessage = async () => {
+    if (!message.trim()) return; // Prevent sending empty messages
 
-  const newMessage = {
-    sessionId, // Matches the backend sessionId parameter
-    message: message.trim(), // Message content
-  };
+    const newMessage = {
+      sessionId, // Matches the backend sessionId parameter
+      message: message.trim(), // Message content
+    };
 
-  try {
-    // Send the message to the backend
-    const response = await api.post('/videosession/send-message', newMessage, {
-     
-    });
+    try {
+      // Send the message to the backend
+      const response = await api.post("/videosession/send-message", newMessage);
 
-    if (response.data.success) {
-      // Update the local state to display the message
-      setMessages((prevMessages) => [
-        ...prevMessages,
-        
-          { sender: currentUser, content: message.trim(), timestamp: new Date() },
-        ]);
-  
+      if (response.data.success) {
+        // Update the local state to display the message immediately
+        const messageToAdd = {
+          _id: response.data.chatMessage._id,
+          userId: {
+            _id: parsedUser._id,
+            name: parsedUser.name,
+          },
+          message: message.trim(),
+          timestamp: new Date(),
+        };
 
-      // Emit the message to other users in the room via Socket.IO
-      socketRef.current.emit('sendMessage', {
-        sessionId,
-        userId: currentUser._id,
-        message: message.trim(),
-      });
+        setMessages((prevMessages) => [...prevMessages, messageToAdd]);
 
-      setMessage(''); // Clear the input field
-    } else {
-      console.error('Failed to send message:', response.data.message);
+        // Emit the message to other users in the room via Socket.IO
+        if (socketRef.current) {
+          socketRef.current.emit("sendMessage", {
+            sessionId,
+            userId: parsedUser._id,
+            userName: parsedUser.name,
+            message: message.trim(),
+            timestamp: new Date(),
+          });
+        }
+
+        setMessage(""); // Clear the input field
+      } else {
+        console.error("Failed to send message:", response.data.message);
+        setError("Failed to send message. Please try again.");
+      }
+    } catch (error) {
+      console.error(
+        "Failed to send message:",
+        error.response?.data || error.message
+      );
+      setError("Failed to send message. Please try again.");
     }
-  } catch (error) {
-    console.error('Failed to send message:', error.response?.data || error.message);
-  }
-};
+  };
 
   return (
     <div className="video-chat-container">
-          {/* Error Display */}
-    {error && (
-      <div className="error-banner">
-        <p>{error}</p>
-        <button onClick={() => setError('')} title="Dismiss Error">
-          Dismiss
-        </button>
-      </div>
-    )}
-      <div className="controls">
-        {inCall ? (
-          <>
-            <button onClick={endCall} title="End Call">
-  <FaPhoneSlash />
-</button>
-
-            
-            <button
-              onClick={toggleAudio}
-              title={audioEnabled ? 'Mute Audio' : 'Unmute Audio'}
-            >
-              {audioEnabled ? <FaMicrophone /> : <FaMicrophoneSlash />}
+      {/* Main Content Area */}
+      <div
+        className={`video-main-content ${
+          showParticipants && showChat && inCall
+            ? "both-open"
+            : showParticipants && inCall
+            ? "participants-open"
+            : showChat && inCall
+            ? "chat-open"
+            : ""
+        }`}
+      >
+        {/* Error Display */}
+        {error && (
+          <div className="error-banner">
+            <p>{error}</p>
+            <button onClick={() => setError("")} title="Dismiss Error">
+              Dismiss
             </button>
-            <button
-              onClick={toggleVideo}
-              title={videoEnabled ? 'Disable Video' : 'Enable Video'}
-            >
-              {videoEnabled ? <FaVideo /> : <FaVideoSlash />}
-            </button>
-            <button
-              onClick={toggleScreenSharing}
-              title={screenSharing ? 'Stop Screen Share' : 'Share Screen'}
-            >
-              <FaDesktop />
-            </button>
-            <button
-              onClick={() => navigator.mediaDevices.enumerateDevices()}
-              title="Switch Camera"
-            >
-              <FaSync />
-            </button>
-            <button
-              onClick={() => setShowParticipants(!showParticipants)}
-              title={showParticipants ? 'Hide Participants' : 'Show Participants'}
-            >
-              <FaUsers />
-            </button>
-            <button
-              onClick={() => setShowChat(!showChat)}
-              title={showChat ? 'Hide Chat' : 'Show Chat'}
-            >
-              <FaCommentDots />
-            </button>
-          </>
-        ) : (
-          <>
-            <button
-              onClick={startCall}
-              disabled={inCall}
-              title={inCall ? 'Session already active' : 'Start Call'}
-            >
-              <FaPhone />
-            </button>
-            <button onClick={joinCall} title="Join Call">
-              <FaPhone />
-            </button>
-          </>
+          </div>
         )}
-      </div>
-  
-      {inCall && (
-        <div className="video-area">
-          <video muted ref={userVideo} autoPlay playsInline className="user-video" />
-          
-          {peers.map((peer, index) => (
-            <Video key={index} peer={peer} />
-          ))}
+
+        {inCall && (
+          <div className="video-area">
+            {/* Your own video - always shown */}
+            <div className="video-container">
+              <video
+                muted
+                ref={userVideo}
+                autoPlay
+                playsInline
+                className="user-video"
+              />
+              <div className="video-label">You ({parsedUser.name || 'You'})</div>
+            </div>
+
+            {/* Other participants' videos */}
+            {peers
+              .filter(peer => peer && !peer.destroyed)
+              .map((peer, index) => {
+                // Find the corresponding participant for this peer
+                const peerRef = peersRef.current.find(p => p.peer === peer);
+                const participantName = peerRef ? 
+                  participants.find(p => p.socketId === peerRef.peerID)?.userId?.name || 
+                  participants.find(p => p.userId?._id === peerRef.userId)?.userId?.name ||
+                  'Participant' : 'Participant';
+                
+                return (
+                  <div key={`peer-${peerRef?.peerID || index}`} className="video-container">
+                    <Video peer={peer} />
+                    <div className="video-label">{participantName}</div>
+                  </div>
+                );
+              })}
+
+            {/* Show placeholder videos for participants without peer connections */}
+            {participants
+              .filter(p => p.userId?._id !== parsedUser._id) // Exclude current user
+              .filter(p => !peersRef.current.some(peer => 
+                peer.peerID === p.socketId || 
+                participants.find(participant => participant.userId?._id === p.userId?._id)
+              ))
+              .map((participant, index) => (
+                <div key={`placeholder-${participant._id || index}`} className="video-container">
+                  <div className="video-placeholder">
+                    <div className="participant-avatar-large">
+                      {participant.userId?.name?.charAt(0).toUpperCase() || 'P'}
+                    </div>
+                    <p>Connecting to {participant.userId?.name || 'Participant'}...</p>
+                  </div>
+                  <div className="video-label">{participant.userId?.name || 'Participant'}</div>
+                </div>
+              ))}
+
+            {/* Show message when no other participants */}
+            {peers.length === 0 && participants.length <= 1 && (
+              <div className="no-participants-message">
+                <p>Waiting for others to join...</p>
+                <p>Share this session link with others to invite them</p>
+              </div>
+            )}
+          </div>
+        )}
+
+        <div className="controls">
+          {inCall ? (
+            <>
+              {isHost ? (
+                <button
+                  onClick={endCall}
+                  title="End Call (Host)"
+                  className="danger"
+                >
+                  <FaPhoneSlash />
+                </button>
+              ) : (
+                <button
+                  onClick={leaveSession}
+                  title="Leave Session"
+                  className="warning"
+                >
+                  <FaSignOutAlt />
+                </button>
+              )}
+
+              <button
+                onClick={toggleAudio}
+                title={audioEnabled ? "Mute Audio" : "Unmute Audio"}
+              >
+                {audioEnabled ? <FaMicrophone /> : <FaMicrophoneSlash />}
+              </button>
+              <button
+                onClick={toggleVideo}
+                title={videoEnabled ? "Disable Video" : "Enable Video"}
+              >
+                {videoEnabled ? <FaVideo /> : <FaVideoSlash />}
+              </button>
+              <button
+                onClick={toggleScreenSharing}
+                title={screenSharing ? "Stop Screen Share" : "Share Screen"}
+              >
+                <FaDesktop />
+              </button>
+              <button
+                onClick={() => navigator.mediaDevices.enumerateDevices()}
+                title="Switch Camera"
+              >
+                <FaSync />
+              </button>
+              <button
+                onClick={() => setShowParticipants(!showParticipants)}
+                title={
+                  showParticipants ? "Hide Participants" : "Show Participants"
+                }
+              >
+                <FaUsers />
+              </button>
+              <button
+                onClick={() => setShowChat(!showChat)}
+                title={showChat ? "Hide Chat" : "Show Chat"}
+              >
+                <FaCommentDots />
+              </button>
+            </>
+          ) : (
+            <>
+              <button
+                onClick={startCall}
+                disabled={inCall}
+                title={inCall ? "Session already active" : "Start Call"}
+              >
+                <FaPhone />
+              </button>
+              <button onClick={joinCall} title="Join Call">
+                <FaPhone />
+              </button>
+            </>
+          )}
         </div>
+      </div>
+
+      {/* Sidebars */}
+      {showParticipants && inCall && (
+        <UserList
+          participants={participants}
+          onClose={() => setShowParticipants(false)}
+        />
       )}
-  
-      {showParticipants && inCall && <UserList participants={participants} />}
-      {showChat && inCall && <ChatBox messages={messages} message={message} setMessage={setMessage} sendMessage={sendMessage} />}
-  
-      
+      {showChat && inCall && (
+        <ChatBox
+          messages={messages}
+          message={message}
+          setMessage={setMessage}
+          sendMessage={sendMessage}
+          currentUserId={parsedUser._id}
+          onClose={() => setShowChat(false)}
+        />
+      )}
     </div>
   );
-  
 };
 
 const Video = ({ peer }) => {
   const ref = useRef();
+  
   useEffect(() => {
-    peer.on('stream', (stream) => {
-      ref.current.srcObject = stream;
-    });
+    if (!peer) {
+      console.warn("Video component received null peer");
+      return;
+    }
+    
+    const handleStream = (stream) => {
+      console.log("Video component received stream:", stream.id);
+      if (ref.current) {
+        ref.current.srcObject = stream;
+        // Ensure video plays
+        ref.current.play().catch(e => {
+          console.error("Error playing video:", e);
+        });
+      }
+    };
+    
+    // Check if peer already has a stream
+    if (peer.streams && peer.streams.length > 0) {
+      console.log("Peer already has stream, setting immediately");
+      handleStream(peer.streams[0]);
+    }
+    
+    peer.on("stream", handleStream);
+    
+    // Clean up
+    return () => {
+      if (peer.off) {
+        peer.off("stream", handleStream);
+      } else if (peer.removeListener) {
+        peer.removeListener("stream", handleStream);
+      }
+      
+      if (ref.current) {
+        ref.current.srcObject = null;
+      }
+    };
   }, [peer]);
-  return <video playsInline autoPlay ref={ref} className="user-video" />;
+  
+  // Add error handling for the video element
+  const handleVideoError = (e) => {
+    console.error("Video element error:", e);
+  };
+  
+  const handleLoadedMetadata = () => {
+    console.log("Video metadata loaded successfully");
+  };
+  
+  return (
+    <video 
+      playsInline 
+      autoPlay 
+      muted={false} // Don't mute other participants' videos
+      ref={ref} 
+      onError={handleVideoError}
+      onLoadedMetadata={handleLoadedMetadata}
+      className="participant-video"
+      style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+    />
+  );
 };
 
-const ChatBox = ({ messages, message, setMessage, sendMessage }) => (
-  <div className="chat-area">
-       <div className="chat-messages">
-       {messages.map((msg, index) => (
-  <div
-    key={index}
-    className={`message ${
-      msg.userId?.name === 'You' ? 'my-message' : ''
-    }`}
-  >
-    {/* Safely access userId and fall back to 'Unknown' */}
-    <span className="message-sender">
-      {msg.userId?.name || 'Unknown'}
-    </span>
-    <p className="message-text">{msg.message || ''}</p>
-  </div>
-))}
-
+const ChatBox = ({
+  messages,
+  message,
+  setMessage,
+  sendMessage,
+  currentUserId,
+  onClose,
+}) => (
+  <div className="video-chat-area">
+    <div className="chat-header">
+      <h4>
+        <FaCommentDots /> Chat
+      </h4>
+      <button
+        className="video-sidebar-close-btn"
+        onClick={onClose}
+        title="Close Chat"
+      >
+        ×
+      </button>
     </div>
-    <input
-      type="text"
-      value={message}
-      onChange={(e) => setMessage(e.target.value)}
-      placeholder="Type a message"
-      aria-label="Type a message"
-    />
-    <button onClick={sendMessage} title="Send Message">
-      <FaRegPaperPlane />
-    </button>
+    <div className="video-chat-messages">
+      {messages.map((msg, index) => {
+        const isMyMessage =
+          msg.userId?._id === currentUserId || msg.userId?.name === "You";
+        return (
+          <div
+            key={msg._id || index}
+            className={`video-message ${
+              isMyMessage ? "video-my-message" : "video-other-message"
+            }`}
+          >
+            <span className="video-message-sender">
+              {isMyMessage ? "You" : msg.userId?.name || "Unknown"}
+            </span>
+            <p className="video-message-text">{msg.message || ""}</p>
+          </div>
+        );
+      })}
+    </div>
+    <div className="video-chat-input">
+      <input
+        type="text"
+        value={message}
+        onChange={(e) => setMessage(e.target.value)}
+        placeholder="Type a message..."
+        aria-label="Type a message"
+        onKeyDown={(e) => {
+          if (e.key === "Enter" && !e.shiftKey) {
+            e.preventDefault();
+            sendMessage();
+          }
+        }}
+      />
+      <button
+        className="video-send-button"
+        onClick={sendMessage}
+        title="Send Message"
+        disabled={!message.trim()}
+      >
+        <FaRegPaperPlane />
+      </button>
+    </div>
   </div>
 );
 
-const UserList = ({ participants }) =>( 
-    <div className="user-list">
-      <h4>Participants</h4>
-      
-      {participants && participants.length > 0 ? (
+const UserList = ({ participants, onClose }) => {
+  const getParticipantInitial = (name) => {
+    return name ? name.charAt(0).toUpperCase() : "?";
+  };
+
+  const formatJoinTime = (joinedAt) => {
+    if (!joinedAt) return "";
+    const date = new Date(joinedAt);
+    return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  };
+
+  // Filter active participants only
+  const activeParticipants = participants?.filter(p => 
+    p.status === 'active' || p.isOnline !== false
+  ) || [];
+
+  return (
+    <div className="video-user-list">
+      <div className="video-sidebar-header">
+        <h4>
+          <FaUsers /> Participants ({activeParticipants.length})
+        </h4>
+        <button
+          className="video-sidebar-close-btn"
+          onClick={onClose}
+          title="Close Participants"
+        >
+          ×
+        </button>
+      </div>
+
+      {activeParticipants.length > 0 ? (
         <ul>
-          {participants.map((participant, index) => (
-            <li key={index}>
-              <strong>Name:</strong> {participant.userId?.name || 'Unknown'}
-              
+          {activeParticipants.map((participant, index) => (
+            <li
+              key={participant._id || `participant-${index}`}
+              className="video-participant-item"
+            >
+              <div className="video-participant-avatar">
+                {getParticipantInitial(participant.userId?.name)}
+              </div>
+              <div className="video-participant-info">
+                <div className="video-participant-name">
+                  {participant.userId?.name || "Unknown User"}
+                  {participant.isHost && (
+                    <span className="video-host-badge">HOST</span>
+                  )}
+                </div>
+                <div className="video-participant-details">
+                  <span className="video-join-time">
+                    Joined: {formatJoinTime(participant.joinedAt)}
+                  </span>
+                  <span
+                    className={`video-status-indicator ${
+                      participant.isOnline !== false ? "online" : "offline"
+                    }`}
+                  >
+                    {participant.isOnline !== false ? "ONLINE" : "OFFLINE"}
+                  </span>
+                </div>
+              </div>
             </li>
           ))}
         </ul>
       ) : (
-        <p>No participants</p>
+        <div className="video-no-participants">
+          <p>Waiting for others to join...</p>
+          <p>Share this session link with others to invite them</p>
+        </div>
       )}
     </div>
   );
-
-
-  
+};
 
 export default VideoChat;

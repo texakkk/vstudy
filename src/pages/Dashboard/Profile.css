@@ -3,8 +3,8 @@
   display: flex;
   justify-content: center;
   align-items: center;
-  background-color: #f5f6fa;
-  height: 100vh;
+  background: linear-gradient(135deg, #e8f4fd 0%, #d1ecf1 100%);
+  min-height: auto;
   padding: 20px; /* Add padding for mobile devices */
 }
 

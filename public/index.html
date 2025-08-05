@@ -10,6 +10,117 @@
       content="Study Hub Platform"
     />
     <link rel="apple-touch-icon" href="logo512.png" />
+    
+    <!-- Comprehensive polyfills for WebRTC libraries -->
+    <script>
+      // Global polyfill
+      if (typeof global === 'undefined') {
+        var global = globalThis;
+      }
+      
+      // Process polyfill with comprehensive Node.js compatibility
+      if (typeof process === 'undefined') {
+        var process = {
+          env: {
+            NODE_ENV: 'development'
+          },
+          browser: true,
+          version: '16.0.0',
+          versions: {
+            node: '16.0.0'
+          },
+          nextTick: function(callback) {
+            if (typeof callback === 'function') {
+              setTimeout(callback, 0);
+            }
+          },
+          stdout: {
+            write: function() {}
+          },
+          stderr: {
+            write: function() {}
+          }
+        };
+      }
+      
+      // Buffer polyfill
+      if (typeof Buffer === 'undefined') {
+        var Buffer = {
+          isBuffer: function() { return false; },
+          from: function(data) { return new Uint8Array(data); },
+          alloc: function(size) { return new Uint8Array(size); }
+        };
+      }
+      
+      // Enhanced stream polyfill to fix _readableState errors
+      if (typeof require === 'undefined') {
+        var require = function(module) {
+          if (module === 'stream') {
+            function MockReadable() {
+              this._readableState = {
+                objectMode: false,
+                highWaterMark: 16384,
+                buffer: { head: null, tail: null, length: 0 },
+                length: 0,
+                pipes: null,
+                pipesCount: 0,
+                flowing: null,
+                ended: false,
+                endEmitted: false,
+                reading: false,
+                sync: true,
+                needReadable: false,
+                emittedReadable: false,
+                readableListening: false,
+                resumeScheduled: false,
+                destroyed: false,
+                defaultEncoding: 'utf8',
+                awaitDrain: 0,
+                readingMore: false,
+                decoder: null,
+                encoding: null
+              };
+            }
+            
+            function MockWritable() {
+              this._writableState = {
+                objectMode: false,
+                highWaterMark: 16384,
+                buffer: { head: null, tail: null, length: 0 },
+                length: 0,
+                writing: false,
+                corked: 0,
+                sync: true,
+                bufferProcessing: false,
+                needDrain: false,
+                ending: false,
+                ended: false,
+                finished: false,
+                destroyed: false,
+                decodeStrings: true,
+                defaultEncoding: 'utf8'
+              };
+            }
+            
+            return {
+              Readable: MockReadable,
+              Writable: MockWritable
+            };
+          }
+          return {};
+        };
+      }
+      
+      // Additional polyfill for setImmediate
+      if (typeof setImmediate === 'undefined') {
+        var setImmediate = function(callback) {
+          return setTimeout(callback, 0);
+        };
+        var clearImmediate = function(id) {
+          return clearTimeout(id);
+        };
+      }
+    </script>
     <!--
       manifest.json provides metadata used when your web app is installed on a
       user's mobile device or desktop. See https://developers.google.com/web/fundamentals/web-app-manifest/

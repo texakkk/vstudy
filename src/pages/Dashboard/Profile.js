@@ -1,17 +1,31 @@
-import React, { useEffect, useState, useContext } from 'react';
+import React, { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { 
+  Box, 
+  Typography, 
+  Button, 
+  Avatar, 
+  Paper, 
+  Divider, 
+  CircularProgress,
+  Container,
+  Grid,
+  Card,
+  CardContent,
+  CardHeader
+} from '@mui/material';
+import { Edit as EditIcon, Logout as LogoutIcon } from '@mui/icons-material';
 import api from '../../api';
-import AuthContext from '../../AuthContext'; // Import AuthContext
-import './Profile.css';
-import './EditProfile';
-
+import { useAuth } from '../../AuthContext';
+import { useTheme } from '@mui/material/styles';
 
 const Profile = () => {
-  const { logout } = useContext(AuthContext);
+  const { logout } = useAuth();
   const [profile, setProfile] = useState(null);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(true);
   const navigate = useNavigate();
+  const theme = useTheme();
 
   useEffect(() => {
     const fetchProfile = async () => {
@@ -28,53 +42,149 @@ const Profile = () => {
   }, []);
 
   const handleLogout = () => {
-    localStorage.removeItem('token');
     logout();
-    navigate('/');
+    navigate('/signin');
   };
 
+  if (loading) {
+    return (
+      <Box display="flex" justifyContent="center" alignItems="center" minHeight="60vh">
+        <CircularProgress />
+      </Box>
+    );
+  }
+
+  if (error) {
+    return (
+      <Box p={3}>
+        <Typography color="error">{error}</Typography>
+      </Box>
+    );
+  }
+
+  if (!profile) return null;
+
+  // Default avatar if no profile picture is set
+  const defaultAvatar = 'https://www.gravatar.com/avatar/00000000000000000000000000000000?d=mp&f=y';
+
   return (
-    <div className="content-box">
-      <div className="profile-page">
-        {error && <p className="error-message">{error}</p>}
-        {loading ? (
-          <div className="loading-spinner">Loading profile...</div>
-        ) : (
-          profile && (
-            <div className="profile-container">
-              <div className="profile-card">
-                <img
-                  src={profile.avatar || ' '}
-                  alt="Profile"
-                  className="profile-image"
+    <Container maxWidth="md" sx={{ py: 4 }}>
+      <Paper elevation={3} sx={{ borderRadius: 2, overflow: 'hidden' }}>
+        {/* Profile Header */}
+        <Box 
+          sx={{ 
+            height: 150,
+            background: theme.palette.primary.main,
+            position: 'relative',
+            mb: 12
+          }}
+        >
+          <Box
+            sx={{
+              position: 'absolute',
+              bottom: -64,
+              left: '50%',
+              transform: 'translateX(-50%)',
+              textAlign: 'center'
+            }}
+          >
+            <Avatar
+              src={profile.User_profilePicture || defaultAvatar}
+              alt={profile.User_name}
+              sx={{ 
+                width: 128, 
+                height: 128,
+                border: '4px solid white',
+                boxShadow: theme.shadows[3]
+              }}
+            />
+          </Box>
+        </Box>
+
+        {/* Profile Content */}
+        <Box sx={{ p: 4, mt: 6, textAlign: 'center' }}>
+          <Typography variant="h4" component="h1" gutterBottom>
+            {profile.User_name}
+          </Typography>
+          <Typography 
+            variant="subtitle1" 
+            color="textSecondary" 
+            gutterBottom
+            sx={{ mb: 3 }}
+          >
+            {profile.User_email}
+          </Typography>
+
+          <Grid container spacing={4} sx={{ mt: 2, textAlign: 'left' }}>
+            <Grid item xs={12} md={6}>
+              <Card variant="outlined">
+                <CardHeader 
+                  title="Personal Information"
+                  titleTypographyProps={{ variant: 'h6' }}
                 />
-                <h2 className="profile-name">Welcome, {profile.name}</h2>
-                <p className="profile-email">Email: {profile.email}</p>
-                <p className="profile-role">Role: {profile.role}</p>
+                <Divider />
+                <CardContent>
+                  <Box mb={2}>
+                    <Typography variant="subtitle2" color="textSecondary">Role</Typography>
+                    <Typography variant="body1">
+                      {profile.User_role || 'Not specified'}
+                    </Typography>
+                  </Box>
+                  <Box mb={2}>
+                    <Typography variant="subtitle2" color="textSecondary">Location</Typography>
+                    <Typography variant="body1">
+                      {profile.User_location || 'Not specified'}
+                    </Typography>
+                  </Box>
+                  <Box>
+                    <Typography variant="subtitle2" color="textSecondary">Member Since</Typography>
+                    <Typography variant="body1">
+                      {new Date(profile.User_createdAt).toLocaleDateString()}
+                    </Typography>
+                  </Box>
+                </CardContent>
+              </Card>
+            </Grid>
 
-                <div className="profile-details">
-                  <div className="detail-item">
-                    <h4>Location</h4>
-                    <p>{profile.location || 'Not specified'}</p>
-                  </div>
-                  <div className="detail-item">
-                    <h4>Bio</h4>
-                    <p>{profile.bio || 'No bio available'}</p>
-                  </div>
-                </div>
+            <Grid item xs={12} md={6}>
+              <Card variant="outlined" sx={{ height: '100%' }}>
+                <CardHeader 
+                  title="About"
+                  titleTypographyProps={{ variant: 'h6' }}
+                />
+                <Divider />
+                <CardContent>
+                  <Typography variant="body1" sx={{ minHeight: 120 }}>
+                    {profile.User_bio || 'No bio available. Add a bio to tell others more about yourself.'}
+                  </Typography>
+                </CardContent>
+              </Card>
+            </Grid>
+          </Grid>
 
-                <button className="edit-button" onClick={() => navigate('/edit-profile')}>
-                  Edit Profile
-                </button>
-                <button className="logout-button" onClick={handleLogout}>
-                  Logout
-                </button>
-              </div>
-            </div>
-          )
-        )}
-      </div>
-    </div>
+          <Box mt={4} display="flex" justifyContent="center" gap={2}>
+            <Button
+              variant="contained"
+              color="primary"
+              startIcon={<EditIcon />}
+              onClick={() => navigate('/edit-profile')}
+              size="large"
+            >
+              Edit Profile
+            </Button>
+            <Button
+              variant="outlined"
+              color="error"
+              startIcon={<LogoutIcon />}
+              onClick={handleLogout}
+              size="large"
+            >
+              Logout
+            </Button>
+          </Box>
+        </Box>
+      </Paper>
+    </Container>
   );
 };
 

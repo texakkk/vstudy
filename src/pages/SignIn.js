@@ -1,33 +1,39 @@
-import React, { useState, useContext } from 'react';
+import React, { useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import api from '../api';
 import './SignIn.css';
-import AuthContext from '../AuthContext'; // Import Auth Context
+import { useAuth } from '../AuthContext';
 
 const SignIn = () => {
-  const { setIsAuthenticated } = useContext(AuthContext); // Use context to update authentication state
-  const [email, setEmail] = useState('');
-  const [password, setPassword] = useState('');
+  const { setIsAuthenticated, setCurrentUser } = useAuth();
+  const [User_email, setEmail] = useState('');
+  const [User_password, setPassword] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
   const navigate = useNavigate();
-
   const handleSubmit = async (e) => {
     e.preventDefault();
     setError('');
 
     // Basic form validation for email and password
-    if (!/\S+@\S+\.\S+/.test(email)) {
+    if (!/\S+@\S+\.\S+/.test(User_email)) {
       return setError('Please enter a valid email address.');
     }
-    if (password.length < 6) {
+    if (User_password.length < 6) {
       return setError('Password must be at least 6 characters.');
     }
 
     setLoading(true);
     try {
+      const loginData = { 
+        User_email: User_email.trim(),
+        User_password 
+      };
+      console.log('Sending login request with data:', loginData);
+      
       // Make the API call to log in the user
-      const res = await api.post('/auth/login', { email, password });
+      const res = await api.post('/auth/login', loginData);
+      console.log('Login response:', res.data);
 
       // Store the token and user data in localStorage
       localStorage.setItem('token', res.data.token);
@@ -38,12 +44,19 @@ const SignIn = () => {
 
 
       // Update the authentication state
-      setIsAuthenticated(true); // Set authenticated to true
+      setIsAuthenticated(true);
+      setCurrentUser(res.data.user); // Set the current user in context
 
       // Redirect to the dashboard after successful login
       navigate('/dashboard');
      
     } catch (err) {
+      console.error('Login error:', {
+        message: err.message,
+        response: err.response?.data,
+        status: err.response?.status,
+        headers: err.response?.headers
+      });
       setError(err.response?.data?.message || 'Invalid credentials');
     } finally {
       setLoading(false);
@@ -53,39 +66,77 @@ const SignIn = () => {
 
   return (
     <div className="signin-container">
-      <div className="signin-form">
-        <h2>Welcome Back!</h2>
-        <p>Please sign in to continue</p>
-        <form onSubmit={handleSubmit}>
-          <label htmlFor="email">Email Address</label>
-          <input
-            id="email"
-            type="email"
-            placeholder="Enter your email"
-            value={email}
-            onChange={(e) => setEmail(e.target.value)}
-            required
-          />
-          <label htmlFor="password">Password</label>
-          <input
-            id="password"
-            type="password"
-            placeholder="Enter your password"
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            required
-          />
-          <button type="submit" className="btn-signin" disabled={loading}>
-            {loading ? 'Signing In...' : 'Sign In'}
-          </button>
-          {error && <p className="error-message">{error}</p>} {/* Display error message */}
-        </form>
-        <p>
-          <Link to="/forgot-password" className="forgot-password-link">Forgot Password?</Link>
-        </p>
-        <p>
-          Don't have an account? <Link to="/get-started" className="get-started-link">Get Started</Link>
-        </p>
+      <div className="signin-hero">
+        <h1>Welcome Back to Our Learning Community</h1>
+        <p>Sign in to continue your learning journey</p>
+      </div>
+      
+      <div className="signin-layout">
+        {/* Left Side Content */}
+        <div className="left-content">
+          <div className="feature-card">
+            <div className="feature-icon">📊</div>
+            <h3>Track Your Progress</h3>
+            <p>Pick up where you left off and see how far you've come in your learning journey.</p>
+          </div>
+          <div className="feature-card">
+            <div className="feature-icon">🎓</div>
+            <h3>Continue Learning</h3>
+            <p>Access your courses, study materials, and continue your educational path.</p>
+          </div>
+        </div>
+        
+        {/* Center Form */}
+        <div className="center-form">
+          <div className="signin-form">
+            <h2>Welcome Back!</h2>
+            <p className="form-subtitle">Please sign in to continue</p>
+            <form onSubmit={handleSubmit}>
+              <label htmlFor="email">Email Address</label>
+              <input
+                id="email"
+                type="email"
+                placeholder="Enter your email"
+                value={User_email}
+                onChange={(e) => setEmail(e.target.value)}
+                required
+              />
+              <label htmlFor="password">Password</label>
+              <input
+                id="password"
+                type="password"
+                placeholder="Enter your password"
+                value={User_password}
+                onChange={(e) => setPassword(e.target.value)}
+                required
+              />
+              <button type="submit" className="btn-signin" disabled={loading}>
+                {loading ? 'Signing In...' : 'Sign In'}
+              </button>
+              {error && <p className="error-message">{error}</p>}
+            </form>
+            <p className="forgot-password">
+              <Link to="/forgot-password" className="forgot-password-link">Forgot Password?</Link>
+            </p>
+            <p className="signup-prompt">
+              Don't have an account? <Link to="/get-started" className="signup-link">Get Started</Link>
+            </p>
+          </div>
+        </div>
+      
+        {/* Right Side Content */}
+        <div className="right-content">
+          <div className="feature-card">
+            <div className="feature-icon">🤝</div>
+            <h3>Connect with Peers</h3>
+            <p>Join study groups and collaborate with fellow learners to enhance your understanding.</p>
+          </div>
+          <div className="testimonial">
+            <h3>What our users say</h3>
+            <p>"The best learning platform I've used. Made studying so much more effective!"</p>
+            <p className="testimonial-author">- Alex, College Student</p>
+          </div>
+        </div>
       </div>
     </div>
   );

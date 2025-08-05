@@ -1,91 +1,106 @@
 const mongoose = require('mongoose');
 
 const TaskSchema = new mongoose.Schema({
-  groupId: {
+  Task_groupId: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Group',
     required: true,
     index: true,
   },
-  assignedTo: [
+  Task_assignedTo: [
     {
       type: mongoose.Schema.Types.ObjectId,
       ref: 'User',
       index: true,
     }
   ],
-  taskName: {
+  Task_name: {
     type: String,
     required: true,
     trim: true,
   },
-  description: {
+  Task_description: {
     type: String,
     default: '',
     trim: true,
   },
-  status: {
+  Task_status: {
     type: String,
     enum: ['pending', 'in-progress', 'completed'],
     default: 'pending',
   },
-  dueDate: {
+  Task_dueDate: {
     type: Date,
     validate: {
-      validator: function(value) {
+      validator: function (value) {
         return !value || value >= Date.now();
       },
       message: 'Due date cannot be in the past.',
     },
   },
-  priority: {
+  Task_priority: {
     type: String,
     enum: ['low', 'medium', 'high'],
     default: 'medium',
   },
-  comments: [
+  Task_progress: {
+    type: Number,
+    min: 0,
+    max: 100,
+    default: 0,
+    validate: {
+      validator: function(value) {
+        return Number.isInteger(value) && value >= 0 && value <= 100;
+      },
+      message: 'Progress must be an integer between 0 and 100'
+    }
+  },
+  Task_comments: [
     {
-      userId: {
+      Comment_user: {
         type: mongoose.Schema.Types.ObjectId,
         ref: 'User',
         required: true,
       },
-      comment: {
+      Comment_text: {
         type: String,
         required: true,
         trim: true,
       },
-      date: {
+      Comment_date: {
         type: Date,
         default: Date.now,
       },
     }
   ],
-  createdBy: {
+  Task_createdBy: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User',
     required: true,
+    index: true,
   },
-  isNotified: {
+  Task_isNotified: {
     type: Boolean,
     default: false,
-  }
-}, { timestamps: true });
+  },
+  Task_createdAt: { type: Date, default: Date.now },
+  Task_updatedAt: { type: Date, default: Date.now },
+}, );
+
 
 // Indexes for optimized querying
-TaskSchema.index({ groupId: 1, status: 1 }); // Compound index for group and status
-TaskSchema.index({ dueDate: 1 });
-TaskSchema.index({ 'comments.userId': 1 }); // If you need to query comments by user
+TaskSchema.index({ Task_groupId: 1, Task_status: 1 });
+TaskSchema.index({ Task_dueDate: 1 });
+TaskSchema.index({ 'Task_comments.Comment_user': 1 });
 
 // Method to add a comment
-TaskSchema.methods.addComment = function(userId, comment) {
-  this.comments.push({ userId, comment });
+TaskSchema.methods.addComment = function (userId, comment) {
+  this.Task_comments.push({ Comment_user: userId, Comment_text: comment });
   return this.save();
 };
-
 // Method to mark task as notified
-TaskSchema.methods.markAsNotified = function() {
-  this.isNotified = true;
+TaskSchema.methods.markAsNotified = function () {
+  this.Task_isNotified = true;
   return this.save();
 };
 

@@ -1,7 +1,7 @@
 import axios from 'axios';
 
 const api = axios.create({
-  baseURL: process.env.REACT_APP_API_URL || 'https://vstudy-28.onrender.com/api',
+  baseURL: process.env.REACT_APP_API_URL || 'http://localhost:5001/api',
   headers: { 'Content-Type': 'application/json' },
   withCredentials: true, // Allow cookies/authentication
 });
